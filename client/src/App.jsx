@@ -26,9 +26,7 @@ import ResumeUploader from './components/ResumeUploader';
 import ScreenWatcher from './components/ScreenWatcher';
 
 // Connect to backend (Dynamic IP for Mobile/Network Access)
-const SOCKET_URL = window.location.hostname === 'localhost'
-    ? 'http://localhost:3000'
-    : `http://${window.location.hostname}:3000`; // Use local network IP
+const SOCKET_URL = "https://interview-copilot-aii.onrender.com"; // Your Render URL
 
 const socket = io(SOCKET_URL);
 
