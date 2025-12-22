@@ -130,7 +130,7 @@ function App() {
 
             {/* Modals */}
             {showSettings && <ToneSettings socket={socket} onClose={() => setShowSettings(false)} />}
-            {showResumeUpload && <ResumeUploader socket={socket} onClose={() => setShowResumeUpload(false)} />}
+            {showResumeUpload && <ResumeUploader socket={socket} apiBaseUrl={API_BASE_URL} onClose={() => setShowResumeUpload(false)} />}
 
             {/* Main Sidebar */}
             {!isStealth && (
@@ -180,7 +180,7 @@ function App() {
                 {activeTab === 'dashboard' && <Dashboard onStartMock={() => setActiveTab('mock')} onStartCopilot={() => setActiveTab('copilot')} />}
                 {activeTab === 'copilot' && <CopilotView />}
                 {activeTab === 'code' && <div className="p-6 h-full"><CodeEditor /></div>}
-                {activeTab === 'resume' && <ResumeAnalyzer socket={socket} onExit={() => setActiveTab('dashboard')} />}
+                 {activeTab === 'resume' && <ResumeAnalyzer socket={socket} apiBaseUrl={API_BASE_URL} onExit={() => setActiveTab('dashboard')} />}
                 {activeTab === 'analytics' && <Analytics socket={socket} />}
                 {activeTab === 'mock' && <MockInterviewUI socket={socket} onExit={() => setActiveTab('dashboard')} />}
             </div>
