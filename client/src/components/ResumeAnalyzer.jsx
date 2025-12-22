@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const ResumeAnalyzer = ({ socket, onExit }) => {
+const ResumeAnalyzer = ({ socket, apiBaseUrl, onExit }) => {
     const [analysis, setAnalysis] = useState(null);
     const [coverLetter, setCoverLetter] = useState("");
     const [jobDescription, setJobDescription] = useState("");
