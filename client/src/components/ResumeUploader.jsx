@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-const ResumeUploader = ({ socket, onClose }) => {
+const ResumeUploader = ({ socket, apiBaseUrl, onClose }) => {
     const [resumeText, setResumeText] = useState("");
     const [uploading, setUploading] = useState(false);
     const [status, setStatus] = useState("");
@@ -49,7 +49,7 @@ const ResumeUploader = ({ socket, onClose }) => {
                             formData.append('file', file);
 
                             try {
-                                const res = await fetch('http://localhost:3000/api/upload-resume', {
+                                 const res = await fetch(`${apiBaseUrl}/api/upload-resume`, {
                                     method: 'POST',
                                     body: formData
                                 });
