@@ -27,7 +27,7 @@ import ScreenWatcher from './components/ScreenWatcher';
 
 // Connect to backend (Dynamic IP for Mobile/Network Access)
 const SOCKET_URL = "https://interview-copilot-aii.onrender.com"; // Your Render URL
-
+const API_BASE_URL = SOCKET_URL; // Use same URL for API calls
 const socket = io(SOCKET_URL);
 
 function App() {
