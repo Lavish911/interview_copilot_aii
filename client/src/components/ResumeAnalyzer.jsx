@@ -19,8 +19,7 @@ const ResumeAnalyzer = ({ socket, apiBaseUrl, onExit }) => {
         formData.append('file', file);
 
         try {
-            const apiBase = `http://${window.location.hostname}:3000`;
-            const res = await fetch(`${apiBase}/api/upload-resume`, {
+            const res = await fetch(`${apiBaseUrl}/api/upload-resume`, {
                 method: 'POST',
                 body: formData
             });
