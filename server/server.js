@@ -352,9 +352,9 @@ io.on('connection', (socket) => {
         const lastRequest = lastRequestMap.get(socket.id) || 0;
         const timeSinceLast = now - lastRequest;
 
-        // 1 Second Cooldown (Reduced from 3.5s because of Multi-Key Load Balancing)
-        if (timeSinceLast < 1000) {
-            console.log(`Skipping request from ${socket.id} (Cooldown: ${1000 - timeSinceLast}ms)`);
+        // 300ms Cooldown (Extreme speed mode)
+        if (timeSinceLast < 300) {
+            console.log(`Skipping request from ${socket.id} (Cooldown: ${300 - timeSinceLast}ms)`);
             return;
         }
         lastRequestMap.set(socket.id, now);

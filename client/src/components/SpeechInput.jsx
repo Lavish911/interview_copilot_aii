@@ -83,7 +83,7 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
                 silenceTimerRef.current = setTimeout(() => {
                     console.log("⚡ Silence detected. Force sending...");
                     handleSend(interimTranscript);
-                }, 400);
+                }, 250);
             }
         };
 

@@ -33,6 +33,7 @@ const socket = io(SOCKET_URL);
 function App() {
     const [activeTab, setActiveTab] = useState('dashboard');
     const [isStealth, setIsStealth] = useState(false);
+    const [pipWindow, setPipWindow] = useState(null);
     const [showSettings, setShowSettings] = useState(false);
     const [showResumeUpload, setShowResumeUpload] = useState(false);
 
@@ -89,7 +90,7 @@ function App() {
     }, []);
 
     // Copilot View (The original "Main" view)
-    const CopilotView = () => (
+    const copilotView = (
         <div className="flex flex-col md:flex-row h-full overflow-hidden">
             {/* Left Control Panel */}
             <div className="w-full md:w-1/3 p-4 md:p-6 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col gap-4 max-h-[50vh] md:max-h-none overflow-y-auto shrink-0">
@@ -119,7 +120,43 @@ function App() {
                 </div>
 
                 <button
-                    onClick={() => setIsStealth(true)}
+                    onClick={async () => {
+                        if ('documentPictureInPicture' in window) {
+                            try {
+                                const pip = await window.documentPictureInPicture.requestWindow({
+                                    width: 450,
+                                    height: 600,
+                                });
+                                
+                                // Copy styles
+                                [...document.head.querySelectorAll('style, link[rel="stylesheet"]')].forEach(el => {
+                                    pip.document.head.appendChild(el.cloneNode(true));
+                                });
+                                
+                                pip.document.body.style.margin = "0";
+                                pip.document.body.style.height = "100vh";
+                                pip.document.body.style.backgroundColor = "#0f1117";
+                                
+                                const rootDiv = pip.document.createElement('div');
+                                rootDiv.id = 'pip-root';
+                                rootDiv.style.height = "100%";
+                                pip.document.body.appendChild(rootDiv);
+
+                                pip.addEventListener('pagehide', () => {
+                                    setIsStealth(false);
+                                    setPipWindow(null);
+                                });
+
+                                setPipWindow(pip);
+                                setIsStealth(true);
+                            } catch (err) {
+                                console.error("PiP failed", err);
+                                setIsStealth(true); // Fallback
+                            }
+                        } else {
+                            setIsStealth(true); // Fallback
+                        }
+                    }}
                     className="mt-auto w-full py-2 md:py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg flex items-center justify-center gap-2 transition-colors text-sm md:text-base shrink-0"
                 >
                     <Ghost size={16} /> Enter Stealth Mode
@@ -136,7 +173,19 @@ function App() {
     return (
         <div className="flex h-screen bg-[#0f1117] text-slate-300 font-sans overflow-hidden">
             {/* Stealth Overlay */}
-            {isStealth && <StealthOverlay suggestions={suggestions} onClose={() => setIsStealth(false)} />}
+            {isStealth && <StealthOverlay 
+                suggestions={suggestions} 
+                pipWindow={pipWindow}
+                lastTranscript={lastTranscript}
+                onClear={() => {
+                    setSuggestions("");
+                    setLastTranscript("");
+                }}
+                onClose={() => {
+                    setIsStealth(false);
+                    if (pipWindow) pipWindow.close();
+                }} 
+            />}
 
             {/* Modals */}
             {showSettings && <ToneSettings socket={socket} onClose={() => setShowSettings(false)} />}
@@ -188,7 +237,7 @@ function App() {
             {/* Main Content Area */}
             <div className={`flex-1 relative h-full pb-16 md:pb-0 ${isStealth ? 'opacity-0 pointer-events-none' : ''}`}>
                 {activeTab === 'dashboard' && <Dashboard onStartMock={() => setActiveTab('mock')} onStartCopilot={() => setActiveTab('copilot')} />}
-                {activeTab === 'copilot' && <CopilotView />}
+                {activeTab === 'copilot' && copilotView}
                 {activeTab === 'code' && <div className="p-4 md:p-6 h-full"><CodeEditor /></div>}
                  {activeTab === 'resume' && <ResumeAnalyzer socket={socket} apiBaseUrl={API_BASE_URL} onExit={() => setActiveTab('dashboard')} />}
                 {activeTab === 'analytics' && <Analytics socket={socket} />}
