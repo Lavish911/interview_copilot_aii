@@ -76,14 +76,14 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
                 return;
             }
 
-            // LOGIC 2: Turbo Silence Trigger (>800ms)
-            // If we have interim text but no final result for 800ms, assume speech ended.
+            // LOGIC 2: Turbo Silence Trigger (>400ms)
+            // If we have interim text but no final result for 400ms, assume speech ended.
             if (interimTranscript.trim().length > 0) {
                 if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
                 silenceTimerRef.current = setTimeout(() => {
                     console.log("⚡ Silence detected. Force sending...");
                     handleSend(interimTranscript);
-                }, 800);
+                }, 400);
             }
         };
 
@@ -132,8 +132,23 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
         setInterimText("");
     };
 
-    const handleSend = (text) => {
-        if (!text || text === lastProcessedTextRef.current) return;
+    const handleSend = (rawText) => {
+        if (!rawText) return;
+
+        // Auto-correct common technical jargon that STT mishears
+        const corrections = {
+            "reacts": "React", "notes js": "Node.js", "notice": "Node.js",
+            "type script": "TypeScript", "java script": "JavaScript",
+            "d s a": "DSA", "b s a": "DSA", "s q l": "SQL", "mongo db": "MongoDB",
+            "mongo tv": "MongoDB", "get hub": "GitHub", "next js": "Next.js",
+            "view js": "Vue.js", "cs s": "CSS", "ht ml": "HTML"
+        };
+        let text = rawText;
+        for (const [wrong, right] of Object.entries(corrections)) {
+            text = text.replace(new RegExp(`\\b${wrong}\\b`, 'gi'), right);
+        }
+
+        if (text === lastProcessedTextRef.current) return;
 
         console.log("🚀 Send:", text);
         lastProcessedTextRef.current = text;

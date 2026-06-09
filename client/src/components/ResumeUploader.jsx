@@ -87,11 +87,11 @@ const ResumeUploader = ({ socket, apiBaseUrl, onClose }) => {
                     onChange={(e) => setResumeText(e.target.value)}
                 ></textarea>
 
-                <div className="flex items-center justify-between mt-4">
-                    <span className="text-green-400 text-sm font-bold">{status}</span>
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mt-4">
+                    <span className="text-green-400 text-sm font-bold text-center sm:text-left">{status}</span>
                     <button
                         onClick={handleSubmit}
-                        className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-bold transition-colors"
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-bold transition-colors w-full sm:w-auto"
                     >
                         Start Using Context
                     </button>

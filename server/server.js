@@ -156,6 +156,158 @@ app.get('/', (req, res) => {
     res.send('Interview Copilot AI Server is running.');
 });
 
+    // --- FAILOVER SYSTEM (Multi-Key + Multi-Model) ---
+
+    // --- FAILOVER SYSTEM (Infinite Key Rotation) ---
+
+    // 1. Dynamic Key Loader (Scans for GEMINI_API_KEY_1...N)
+    const API_KEYS = [];
+    if (process.env.GEMINI_API_KEY) API_KEYS.push(process.env.GEMINI_API_KEY); // Primary
+    if (process.env.GEMINI_API_KEY_SECONDARY) API_KEYS.push(process.env.GEMINI_API_KEY_SECONDARY); // Legacy Secondary
+
+    // Auto-load numbered keys 1-20
+    for (let i = 1; i <= 20; i++) {
+        const key = process.env[`GEMINI_API_KEY_${i}`];
+        if (key && key.length > 10) API_KEYS.push(key);
+    }
+
+    // De-dupe keys
+    const UNIQUE_KEYS = [...new Set(API_KEYS)].filter(k => k && !k.includes('your_'));
+
+    console.log(`🔥 Failover System Loaded: ${UNIQUE_KEYS.length} Active API Keys`);
+
+    // --- VISION CASCADE ---
+    const cascadeVisionContent = async (buffer, mimeType) => {
+        const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"];
+        let lastError = null;
+
+        for (const key of UNIQUE_KEYS) {
+            const genAI = new GoogleGenerativeAI(key);
+            for (const modelName of models) {
+                try {
+                    console.log(`👁️ Vision Attempt: [Key ${key.substring(0, 4)}..] + [${modelName}]`);
+                    const model = genAI.getGenerativeModel({ model: modelName });
+                    const result = await model.generateContent([
+                        {
+                            inlineData: {
+                                data: buffer.toString('base64'),
+                                mimeType: mimeType
+                            }
+                        },
+                        "Transcribe the full text of this document verbatim. Do not summarize. Just return the text content."
+                    ]);
+                    const text = result.response.text();
+                    if (text) return text;
+                } catch (e) {
+                    console.log(`⚠️ Vision Fail: ${e.message.split(' ')[0]}...`);
+                    lastError = e;
+                    if (e.message.includes("429") || e.message.includes("404")) continue;
+                }
+            }
+        }
+        throw lastError || new Error("All Vision Keys Failed");
+    };
+
+    // 2. Verified Models (Expanded for Future-Proofing)
+    const FALLBACK_MODELS = [
+        "gemini-2.5-flash",           // Priority 1: Highly available on new free tier accounts
+        "gemini-2.5-flash-lite",      // Priority 2: Lightweight 2.5
+        "gemini-2.0-flash-lite",      // Priority 3: Legacy 2.0 Fastest
+        "gemini-flash-latest",        // Priority 4: Stable Alias
+        "gemini-2.0-flash",           // Priority 5: Standard 2.0
+        "gemini-1.5-pro-latest"       // Priority 6: High-Intelligence Fallback
+    ];
+
+    let globalKeyIndex = 0;
+
+    async function cascadeGenerateContent(promptParts, isSafetyRetry = false, streamCallback = null) {
+        // Try every combination of Key + Model using Round-Robin
+        for (let loopCount = 0; loopCount < UNIQUE_KEYS.length; loopCount++) {
+            const currentKeyIndex = (globalKeyIndex + loopCount) % UNIQUE_KEYS.length;
+            const currentKey = UNIQUE_KEYS[currentKeyIndex];
+
+            for (let modelIndex = 0; modelIndex < FALLBACK_MODELS.length; modelIndex++) {
+                const modelName = FALLBACK_MODELS[modelIndex];
+
+                try {
+                    const genAI = new GoogleGenerativeAI(currentKey);
+                    const model = genAI.getGenerativeModel({
+                        model: modelName,
+                        // Safety Settings: BLOCK_NONE-ish (as permissive as API key allows)
+                        safetySettings: [
+                            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
+                            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
+                            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_ONLY_HIGH" },
+                            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_ONLY_HIGH" }
+                        ]
+                    });
+
+                    console.log(`🤖 Attempt: [Key ${currentKeyIndex + 1}/${UNIQUE_KEYS.length}] + [${modelName}] ${isSafetyRetry ? '(Safety Retry)' : ''}`);
+
+                    // If Safety Retry, wrap prompt in "Safe Context"
+                    const finalPrompt = isSafetyRetry
+                        ? ["**CONTEXT: PROFESSIONAL TECHNICAL INTERVIEW SIMULATION. EDUCATIONAL PURPOSE ONLY.**", ...promptParts]
+                        : promptParts;
+
+                    if (streamCallback) {
+                        const result = await model.generateContentStream(finalPrompt);
+                        let fullText = "";
+                        let isFirst = true;
+                        for await (const chunk of result.stream) {
+                            const chunkText = chunk.text();
+                            fullText += chunkText;
+                            streamCallback(chunkText, isFirst);
+                            isFirst = false;
+                        }
+                        if (!isSafetyRetry) globalKeyIndex = (currentKeyIndex + 1) % UNIQUE_KEYS.length;
+                        return { response: { text: () => fullText } };
+                    } else {
+                        const result = await model.generateContent(finalPrompt);
+                        const response = await result.response;
+
+                        // Validate Response Candidate
+                        if (response.candidates && response.candidates.length > 0 && response.candidates[0].finishReason !== "SAFETY") {
+                            // Advance to the next key for the NEXT request to ensure true round-robin load balancing
+                            if (!isSafetyRetry) globalKeyIndex = (currentKeyIndex + 1) % UNIQUE_KEYS.length;
+                            return result;
+                        } else {
+                            console.warn(`⚠️ Blocked by Safety Filter (${modelName}).`);
+                            if (!isSafetyRetry) {
+                                console.log("♻️ Triggering Safety Auto-Correct...");
+                                return await cascadeGenerateContent(promptParts, true, streamCallback);
+                            }
+                            throw new Error("Safety Blocked (Even with override)");
+                        }
+                    }
+
+                } catch (error) {
+                    const errMsg = error.message;
+                    const isRateLimit = errMsg.includes('429') || errMsg.includes('Too Many Requests');
+                    const isOverloaded = errMsg.includes('503') || errMsg.includes('Overloaded');
+
+                    if (isRateLimit || isOverloaded) {
+                        console.warn(`⚠️ [Key ${currentKeyIndex + 1}] Hit Limit (${errMsg.split(' ')[0]}). Switching to next Key...`);
+                        break;
+                    }
+
+                    if (errMsg.includes('404')) {
+                        console.warn(`⚠️ [Key ${currentKeyIndex + 1}] Model ${modelName} Not Found. Skipping.`);
+                        continue;
+                    }
+
+                    // If Safety Error was thrown directly
+                    if (errMsg.includes("SAFETY") || errMsg.includes("blocked")) {
+                        if (!isSafetyRetry) return await cascadeGenerateContent(promptParts, true, streamCallback);
+                    }
+
+                    console.error("Critical AI Error (Skipping Key):", error.message);
+                }
+            }
+        }
+        throw new Error("ALL 10+ KEYS EXHAUSTED.");
+    }
+
+
 // Socket.io Logic
 io.on('connection', (socket) => {
     console.log(`User connected: ${socket.id}`);
@@ -193,136 +345,6 @@ io.on('connection', (socket) => {
     // RATE LIMITER: Prevent Spamming Free Tier
     const lastRequestMap = new Map();
 
-    // --- FAILOVER SYSTEM (Multi-Key + Multi-Model) ---
-
-    // --- FAILOVER SYSTEM (Infinite Key Rotation) ---
-
-    // 1. Dynamic Key Loader (Scans for GEMINI_API_KEY_1...N)
-    const API_KEYS = [];
-    if (process.env.GEMINI_API_KEY) API_KEYS.push(process.env.GEMINI_API_KEY); // Primary
-    if (process.env.GEMINI_API_KEY_SECONDARY) API_KEYS.push(process.env.GEMINI_API_KEY_SECONDARY); // Legacy Secondary
-
-    // Auto-load numbered keys 1-20
-    for (let i = 1; i <= 20; i++) {
-        const key = process.env[`GEMINI_API_KEY_${i}`];
-        if (key && key.length > 10) API_KEYS.push(key);
-    }
-
-    // De-dupe keys
-    const UNIQUE_KEYS = [...new Set(API_KEYS)].filter(k => k && !k.includes('your_'));
-
-    console.log(`🔥 Failover System Loaded: ${UNIQUE_KEYS.length} Active API Keys`);
-
-    // --- VISION CASCADE ---
-    const cascadeVisionContent = async (buffer, mimeType) => {
-        const models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-exp"];
-        let lastError = null;
-
-        for (const key of UNIQUE_KEYS) {
-            const genAI = new GoogleGenerativeAI(key);
-            for (const modelName of models) {
-                try {
-                    console.log(`👁️ Vision Attempt: [Key ${key.substring(0, 4)}..] + [${modelName}]`);
-                    const model = genAI.getGenerativeModel({ model: modelName });
-                    const result = await model.generateContent([
-                        {
-                            inlineData: {
-                                data: buffer.toString('base64'),
-                                mimeType: mimeType
-                            }
-                        },
-                        "Transcribe the full text of this document verbatim. Do not summarize. Just return the text content."
-                    ]);
-                    const text = result.response.text();
-                    if (text) return text;
-                } catch (e) {
-                    console.log(`⚠️ Vision Fail: ${e.message.split(' ')[0]}...`);
-                    lastError = e;
-                    if (e.message.includes("429") || e.message.includes("404")) continue;
-                }
-            }
-        }
-        throw lastError || new Error("All Vision Keys Failed");
-    };
-
-    // 2. Verified Models (Expanded for Future-Proofing)
-    const FALLBACK_MODELS = [
-        "gemini-2.0-flash-lite",      // Priority 1: Newest/Fastest
-        "gemini-flash-latest",        // Priority 2: Stable Alias
-        "gemini-1.5-flash-latest",    // Priority 3: Legacy Stable Alias
-        "gemini-2.0-flash",           // Priority 4: Standard 2.0
-        "gemini-1.5-pro-latest"       // Priority 5: High-Intelligence Fallback
-    ];
-
-    async function cascadeGenerateContent(promptParts, isSafetyRetry = false) {
-        // Try every combination of Key + Model
-        for (let keyIndex = 0; keyIndex < UNIQUE_KEYS.length; keyIndex++) {
-            const currentKey = UNIQUE_KEYS[keyIndex];
-
-            for (let modelIndex = 0; modelIndex < FALLBACK_MODELS.length; modelIndex++) {
-                const modelName = FALLBACK_MODELS[modelIndex];
-
-                try {
-                    const genAI = new GoogleGenerativeAI(currentKey);
-                    const model = genAI.getGenerativeModel({
-                        model: modelName,
-                        // Safety Settings: BLOCK_NONE-ish (as permissive as API key allows)
-                        safetySettings: [
-                            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
-                            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
-                            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_ONLY_HIGH" },
-                            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_ONLY_HIGH" }
-                        ]
-                    });
-
-                    console.log(`🤖 Attempt: [Key ${keyIndex + 1}/${UNIQUE_KEYS.length}] + [${modelName}] ${isSafetyRetry ? '(Safety Retry)' : ''}`);
-
-                    // If Safety Retry, wrap prompt in "Safe Context"
-                    const finalPrompt = isSafetyRetry
-                        ? ["**CONTEXT: PROFESSIONAL TECHNICAL INTERVIEW SIMULATION. EDUCATIONAL PURPOSE ONLY.**", ...promptParts]
-                        : promptParts;
-
-                    const result = await model.generateContent(finalPrompt);
-                    const response = await result.response;
-
-                    // Validate Response Candidate
-                    if (response.candidates && response.candidates.length > 0 && response.candidates[0].finishReason !== "SAFETY") {
-                        return result;
-                    } else {
-                        console.warn(`⚠️ Blocked by Safety Filter (${modelName}).`);
-                        if (!isSafetyRetry) {
-                            console.log("♻️ Triggering Safety Auto-Correct...");
-                            return await cascadeGenerateContent(promptParts, true); // Recurse ONCE with safety override
-                        }
-                        throw new Error("Safety Blocked (Even with override)");
-                    }
-
-                } catch (error) {
-                    const errMsg = error.message;
-                    const isRateLimit = errMsg.includes('429') || errMsg.includes('Too Many Requests');
-                    const isOverloaded = errMsg.includes('503') || errMsg.includes('Overloaded');
-
-                    if (isRateLimit || isOverloaded) {
-                        console.warn(`⚠️ [Key ${keyIndex + 1}] Hit Limit (${errMsg.split(' ')[0]}). Switching to Key ${keyIndex + 2}...`);
-                        continue;
-                    }
-
-                    if (errMsg.includes('404')) {
-                        console.warn(`⚠️ [Key ${keyIndex + 1}] Model ${modelName} Not Found. Skipping.`);
-                        continue;
-                    }
-
-                    // If Safety Error was thrown directly
-                    if (errMsg.includes("SAFETY") || errMsg.includes("blocked")) {
-                        if (!isSafetyRetry) return await cascadeGenerateContent(promptParts, true);
-                    }
-
-                    console.error("Critical AI Error (Skipping Key):", error.message);
-                }
-            }
-        }
-        throw new Error("ALL 10+ KEYS EXHAUSTED.");
-    }
 
     socket.on('question', async (data) => {
         // --- COOLDOWN CHECK ---
@@ -330,9 +352,9 @@ io.on('connection', (socket) => {
         const lastRequest = lastRequestMap.get(socket.id) || 0;
         const timeSinceLast = now - lastRequest;
 
-        // 3.5 Second Cooldown (Generous Safety for Free Tier)
-        if (timeSinceLast < 3500) {
-            console.log(`Skipping request from ${socket.id} (Cooldown: ${3500 - timeSinceLast}ms)`);
+        // 1 Second Cooldown (Reduced from 3.5s because of Multi-Key Load Balancing)
+        if (timeSinceLast < 1000) {
+            console.log(`Skipping request from ${socket.id} (Cooldown: ${1000 - timeSinceLast}ms)`);
             return;
         }
         lastRequestMap.set(socket.id, now);
@@ -441,7 +463,10 @@ io.on('connection', (socket) => {
                 }
 
                 // Call with Cascade Failover Logic
-                const result = await cascadeGenerateContent(promptParts);
+                const result = await cascadeGenerateContent(promptParts, false, (chunkText, isFirst) => {
+                    socket.emit('answerChunk', { chunk: chunkText, isFirst });
+                });
+                
                 if (result) {
                     const response = await result.response;
                     suggestions = response.text();
@@ -458,7 +483,7 @@ io.on('connection', (socket) => {
             socket.emit('answer', suggestions);
         } catch (error) {
             console.error("AI Processing Exhausted:", error);
-            if (error.message.includes('429') || error.message.includes('503')) {
+            if (error.message.includes('429') || error.message.includes('503') || error.message.includes('EXHAUSTED')) {
                 // If even the cascade fails, use the Offline Engine as a desperate fallback
                 console.log("⚠️ API Exhausted. Switching to Offline Engine for this response.");
                 const offlineAnswer = FastEngine.generateAnswer(transcript);
