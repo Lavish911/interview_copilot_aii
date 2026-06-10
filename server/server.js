@@ -219,12 +219,20 @@ app.get('/', (req, res) => {
     ];
 
     let globalKeyIndex = 0;
+    const deadKeys = new Set(); // Stores keys that have completely failed all models
 
     async function cascadeGenerateContent(promptParts, isSafetyRetry = false, streamCallback = null) {
         // Try every combination of Key + Model using Round-Robin
         for (let loopCount = 0; loopCount < UNIQUE_KEYS.length; loopCount++) {
             const currentKeyIndex = (globalKeyIndex + loopCount) % UNIQUE_KEYS.length;
             const currentKey = UNIQUE_KEYS[currentKeyIndex];
+
+            // If the key has failed all models previously, don't waste time on it again
+            if (deadKeys.has(currentKey)) {
+                continue;
+            }
+
+            let anyModelSucceeded = false;
 
             for (let modelIndex = 0; modelIndex < FALLBACK_MODELS.length; modelIndex++) {
                 const modelName = FALLBACK_MODELS[modelIndex];
@@ -286,8 +294,8 @@ app.get('/', (req, res) => {
                     const isOverloaded = errMsg.includes('503') || errMsg.includes('Overloaded');
 
                     if (isRateLimit || isOverloaded) {
-                        console.warn(`⚠️ [Key ${currentKeyIndex + 1}] Hit Limit (${errMsg.split(' ')[0]}). Switching to next Key...`);
-                        break;
+                        console.warn(`⚠️ [Key ${currentKeyIndex + 1}] Model ${modelName} Rate Limited/Overloaded. Trying next model...`);
+                        continue;
                     }
 
                     if (errMsg.includes('404')) {
@@ -302,6 +310,11 @@ app.get('/', (req, res) => {
 
                     console.error("Critical AI Error (Skipping Key):", error.message);
                 }
+            }
+
+            if (!anyModelSucceeded) {
+                console.log(`💀 [Key ${currentKeyIndex + 1}] Failed all models. Marking as exhausted for this session.`);
+                deadKeys.add(currentKey);
             }
         }
         throw new Error("ALL 10+ KEYS EXHAUSTED.");
@@ -359,6 +372,8 @@ io.on('connection', (socket) => {
         }
         lastRequestMap.set(socket.id, now);
         // ----------------------
+        
+        socket.emit('answerChunk', { chunk: "🔄 *Connecting to AI Engine...*\n\n", isFirst: true });
 
         // Handle both simple string (legacy) and object (multimodal) payloads
         let transcript = "";

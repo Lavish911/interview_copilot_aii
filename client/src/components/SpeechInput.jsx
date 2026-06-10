@@ -137,11 +137,25 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
 
         // Auto-correct common technical jargon that STT mishears
         const corrections = {
-            "reacts": "React", "notes js": "Node.js", "notice": "Node.js",
-            "type script": "TypeScript", "java script": "JavaScript",
-            "d s a": "DSA", "b s a": "DSA", "s q l": "SQL", "mongo db": "MongoDB",
-            "mongo tv": "MongoDB", "get hub": "GitHub", "next js": "Next.js",
-            "view js": "Vue.js", "cs s": "CSS", "ht ml": "HTML"
+            // Frontend
+            "reacts": "React", "re act": "React", "type script": "TypeScript", 
+            "java script": "JavaScript", "view js": "Vue.js", "next js": "Next.js",
+            "cs s": "CSS", "ht ml": "HTML", "tail wind": "Tailwind", "re ducks": "Redux",
+            // Backend
+            "notes js": "Node.js", "notice": "Node.js", "note js": "Node.js", "no js": "Node.js",
+            "express js": "Express.js", "nest js": "NestJS", "spring boot": "Spring Boot",
+            "jason": "JSON", "j son": "JSON", "a p i": "API", "graph q l": "GraphQL",
+            // Databases
+            "s q l": "SQL", "my sql": "MySQL", "post grass": "PostgreSQL", "post gress": "PostgreSQL",
+            "mongo db": "MongoDB", "mongo tv": "MongoDB", "mango db": "MongoDB",
+            "red is": "Redis", "read is": "Redis",
+            // DevOps & Cloud
+            "cooper net is": "Kubernetes", "kuber netis": "Kubernetes", "cuban it is": "Kubernetes",
+            "doctor": "Docker", "a w s": "AWS", "g c p": "GCP", "get hub": "GitHub", "git lab": "GitLab",
+            "ci cd": "CI/CD", "c i c d": "CI/CD",
+            // Core CS
+            "d s a": "DSA", "b s a": "DSA", "big o": "Big O", "object oriented": "OOP",
+            "c plus plus": "C++", "c sharp": "C#"
         };
         let text = rawText;
         for (const [wrong, right] of Object.entries(corrections)) {
