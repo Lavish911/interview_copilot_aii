@@ -11,7 +11,7 @@ import fs from 'fs';
 import { createRequire } from "module";
 
 const require = createRequire(import.meta.url);
-const pdf = require("pdf-parse");
+const { PDFParse } = require("pdf-parse");
 
 dotenv.config();
 
@@ -222,6 +222,8 @@ app.get('/', (req, res) => {
     const deadKeys = new Set(); // Stores keys that have completely failed all models
 
     async function cascadeGenerateContent(promptParts, isSafetyRetry = false, streamCallback = null) {
+        const parts = Array.isArray(promptParts) ? promptParts : [promptParts];
+
         // Try every combination of Key + Model using Round-Robin
         for (let loopCount = 0; loopCount < UNIQUE_KEYS.length; loopCount++) {
             const currentKeyIndex = (globalKeyIndex + loopCount) % UNIQUE_KEYS.length;
@@ -232,7 +234,7 @@ app.get('/', (req, res) => {
                 continue;
             }
 
-            let anyModelSucceeded = false;
+            let onlyTransientFailures = true;
 
             for (let modelIndex = 0; modelIndex < FALLBACK_MODELS.length; modelIndex++) {
                 const modelName = FALLBACK_MODELS[modelIndex];
@@ -254,8 +256,8 @@ app.get('/', (req, res) => {
 
                     // If Safety Retry, wrap prompt in "Safe Context"
                     const finalPrompt = isSafetyRetry
-                        ? ["**CONTEXT: PROFESSIONAL TECHNICAL INTERVIEW SIMULATION. EDUCATIONAL PURPOSE ONLY.**", ...promptParts]
-                        : promptParts;
+                        ? ["**CONTEXT: PROFESSIONAL TECHNICAL INTERVIEW SIMULATION. EDUCATIONAL PURPOSE ONLY.**", ...parts]
+                        : parts;
 
                     if (streamCallback) {
                         const result = await model.generateContentStream(finalPrompt);
@@ -282,7 +284,7 @@ app.get('/', (req, res) => {
                             console.warn(`⚠️ Blocked by Safety Filter (${modelName}).`);
                             if (!isSafetyRetry) {
                                 console.log("♻️ Triggering Safety Auto-Correct...");
-                                return await cascadeGenerateContent(promptParts, true, streamCallback);
+                                return await cascadeGenerateContent(parts, true, streamCallback);
                             }
                             throw new Error("Safety Blocked (Even with override)");
                         }
@@ -305,19 +307,22 @@ app.get('/', (req, res) => {
 
                     // If Safety Error was thrown directly
                     if (errMsg.includes("SAFETY") || errMsg.includes("blocked")) {
-                        if (!isSafetyRetry) return await cascadeGenerateContent(promptParts, true, streamCallback);
+                        if (!isSafetyRetry) return await cascadeGenerateContent(parts, true, streamCallback);
                     }
 
+                    onlyTransientFailures = false;
                     console.error("Critical AI Error (Skipping Key):", error.message);
                 }
             }
 
-            if (!anyModelSucceeded) {
+            if (onlyTransientFailures) {
+                console.log(`⏳ [Key ${currentKeyIndex + 1}] Rate-limited/Unavailable on all models. Will retry next round.`);
+            } else {
                 console.log(`💀 [Key ${currentKeyIndex + 1}] Failed all models. Marking as exhausted for this session.`);
                 deadKeys.add(currentKey);
             }
         }
-        throw new Error("ALL 10+ KEYS EXHAUSTED.");
+        throw new Error("ALL KEYS EXHAUSTED.");
     }
 
 
@@ -548,10 +553,10 @@ io.on('connection', (socket) => {
         // Better: Client should send duration. For now, simple count.
         const wordCount = transcript.split(' ').length;
 
-        // 2. Filler Word Detection
-        // Note: Web Speech API often filters these, but we check anyway.
+        // 2. Filler Word Detection (word-boundary match to avoid false positives like "likely")
         const fillers = ['um', 'uh', 'like', 'you know', 'basically', 'actually', 'literally'];
-        const foundFillers = fillers.filter(w => transcript.toLowerCase().includes(w));
+        const lowerTranscript = transcript.toLowerCase();
+        const foundFillers = fillers.filter(w => new RegExp(`\\b${w}\\b`).test(lowerTranscript));
 
         // 3. Simple Heuristic Score (0-10)
         let baseScore = 9;
@@ -585,7 +590,7 @@ io.on('connection', (socket) => {
                  - Do NOT provide the answer.
                  - Just the question text.`;
 
-                const result = await geminiModel.generateContent(prompt);
+                const result = await cascadeGenerateContent(prompt);
                 const question = (await result.response).text();
 
                 socket.emit('mockQuestion', question);
@@ -605,7 +610,6 @@ io.on('connection', (socket) => {
         const { question, answer } = data;
         try {
             if (geminiModel) {
-                console.log("Sending answer to Gemini for grading...");
                 console.log("Sending answer to Gemini for grading...");
 
                 async function getGrading(retryCount = 0) {
@@ -824,7 +828,9 @@ app.post('/api/upload-resume', upload.single('file'), async (req, res) => {
 
         if (mimeType === 'application/pdf') {
             try {
-                const data = await pdf(req.file.buffer);
+                const parser = new PDFParse({ data: req.file.buffer });
+                const data = await parser.getText();
+                await parser.destroy();
                 text = data.text;
 
                 if (text.trim().length < 50) {

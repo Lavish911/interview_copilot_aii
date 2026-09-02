@@ -1,4 +1,24 @@
 import React, { useState, useEffect } from 'react';
+import { saveLocal, STORAGE_KEYS } from '../lib/storage';
+import { toast } from './Toaster';
+
+const ScoreGauge = ({ score }) => {
+    const s = Math.max(0, Math.min(100, Number(score)||0));
+    const R=54, C=2*Math.PI*R;
+    const color = s>80?'#0A0A0A':s>60?'#525252':'#DC2626';
+    return (
+        <div className="relative w-32 h-32 shrink-0">
+            <svg className="w-full h-full -rotate-90" viewBox="0 0 128 128">
+                <circle cx="64" cy="64" r={R} fill="none" stroke="var(--border)" strokeWidth="10" />
+                <circle cx="64" cy="64" r={R} fill="none" stroke={color} strokeWidth="10" strokeLinecap="round" strokeDasharray={C} strokeDashoffset={C - (C*s)/100} />
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-2xl font-semibold">{s}</span>
+                <span className="text-xs" style={{ color:'var(--text-faint)'}}>/ 100</span>
+            </div>
+        </div>
+    );
+};
 
 const ResumeAnalyzer = ({ socket, apiBaseUrl, onExit }) => {
     const [analysis, setAnalysis] = useState(null);
@@ -7,301 +27,131 @@ const ResumeAnalyzer = ({ socket, apiBaseUrl, onExit }) => {
     const [loading, setLoading] = useState(false);
     const [activeTab, setActiveTab] = useState('ats');
     const [questions, setQuestions] = useState([]);
-    const [resumeUploadStatus, setResumeUploadStatus] = useState("");
+    const [status, setStatus] = useState("");
     const [showUploader, setShowUploader] = useState(false);
 
-    const handleFileUpload = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        setResumeUploadStatus("Uploading & Parsing PDF...");
-
-        const formData = new FormData();
-        formData.append('file', file);
-
-        try {
-            const res = await fetch(`${apiBaseUrl}/api/upload-resume`, {
-                method: 'POST',
-                body: formData
-            });
-            const data = await res.json();
-            if (data.success) {
-                setResumeUploadStatus(`✅ Resume Updated! (${data.text.length} chars)`);
-                // Auto-run analysis if on ATS tab
-                if (activeTab === 'ats') setTimeout(() => runAnalysis(), 500);
-            } else {
-                setResumeUploadStatus(`❌ Error: ${data.error}`);
-            }
-        } catch (err) {
-            setResumeUploadStatus(`❌ Network Error`);
-        }
+    const handleFile = async (e) => {
+        const file=e.target.files[0]; if(!file) return;
+        setStatus("Reading…");
+        const fd=new FormData(); fd.append('file', file);
+        try{
+            const res=await fetch(`${apiBaseUrl}/api/upload-resume`,{method:'POST',body:fd});
+            const data=await res.json();
+            if(data.success){ setStatus(`Ready — ${(data.text.length/1000).toFixed(1)}k`); toast('Resume ready','success'); }
+            else { setStatus(data.error||'Failed'); toast('Upload failed','error'); }
+        } catch { setStatus('Network error'); }
     };
 
-    const runAnalysis = () => {
-        setLoading(true);
-        // Send JD with the request for tailored results
-        socket.emit('analyzeResume', { jobDescription });
-    };
-
-    const runCoverLetter = () => {
-        if (!jobDescription) {
-            alert("Please paste the Job Description first to generate a tailored letter.");
-            return;
-        }
-        setLoading(true);
-        socket.emit('generateCoverLetter', { jobDescription });
-    };
-
-    const activePrediction = () => {
-        setLoading(true);
-        socket.emit('predictQuestions');
-    };
-
-    useEffect(() => {
-        // Restore State from Server
+    useEffect(()=>{
         socket.emit('requestSessionState');
-
-        socket.on('sessionStateUpdate', (data) => {
-            if (data.analysis) setAnalysis(data.analysis);
-            if (data.coverLetter) setCoverLetter(data.coverLetter);
-        });
-
-        socket.on('resumeAnalysisResult', (data) => {
-            setAnalysis(data);
-            setLoading(false);
-        });
-
-        socket.on('coverLetterResult', (text) => {
-            setCoverLetter(text);
-            setLoading(false);
-        });
-
-        socket.on('predictionResult', (qs) => {
-            setQuestions(qs);
-            setLoading(false);
-        });
-
-        return () => {
-            socket.off('sessionStateUpdate');
-            socket.off('resumeAnalysisResult');
-            socket.off('coverLetterResult');
-            socket.off('predictionResult');
-        };
-    }, [socket]);
+        socket.on('sessionStateUpdate', (d)=>{ if(d.analysis) setAnalysis(d.analysis); if(d.coverLetter) setCoverLetter(d.coverLetter); });
+        socket.on('resumeAnalysisResult', (d)=>{ setAnalysis(d); setLoading(false); if(d?.score) saveLocal(STORAGE_KEYS.atsScore,d); });
+        socket.on('coverLetterResult', (t)=>{ setCoverLetter(t); setLoading(false); });
+        socket.on('predictionResult', (qs)=>{ setQuestions(qs); setLoading(false); });
+        return ()=>{ socket.off('sessionStateUpdate'); socket.off('resumeAnalysisResult'); socket.off('coverLetterResult'); socket.off('predictionResult'); };
+    },[socket]);
 
     return (
-        <div className="flex flex-col h-full p-6 bg-slate-900 text-slate-200 overflow-y-auto">
-            <header className="flex justify-between items-start mb-6 border-b border-slate-700 pb-4">
+        <div className="p-6 md:p-8 max-w-[860px] mx-auto w-full">
+            <div className="cluely-hero p-6 flex items-start justify-between gap-4 mb-6">
                 <div>
-                    <h2 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-green-400 to-blue-500">
-                        Wonderin Strategy Suite
-                    </h2>
-                    <p className="text-xs text-slate-400 mt-1">AI-Powered Resume Tailoring & Cover Letters</p>
+                    <div className="text-[11px] tracking-wide uppercase" style={{ color:'var(--text-faint)'}}>Resume Studio</div>
+                    <h2 className="text-xl font-semibold tracking-tight mt-1">Make it match</h2>
+                    <p className="text-[13px] mt-1" style={{ color:'var(--text-muted)'}}>Paste a job post, get a score and a cover letter.</p>
                 </div>
-                <button onClick={onExit} className="text-slate-400 hover:text-white px-3 py-1 border border-slate-700 rounded text-sm">
-                    Exit
-                </button>
-            </header>
+                <button onClick={onExit} className="px-3 py-2 rounded-lg border text-xs font-medium" style={{ borderColor:'var(--border)'}}>Exit</button>
+            </div>
 
-            {/* INTEGRATED RESUME UPLOADER */}
-            <div className="bg-slate-800/50 p-4 rounded-xl border border-dashed border-slate-600 mb-6">
-                <div className="flex justify-between items-center mb-2">
-                    <label className="text-xs font-bold text-blue-400 uppercase tracking-wider flex items-center gap-2">
-                        📄 Your Resume Context
-                        {resumeUploadStatus && <span className="text-white normal-case bg-blue-600 px-2 py-0.5 rounded-full text-[10px]">{resumeUploadStatus}</span>}
-                    </label>
-                    <button
-                        onClick={() => setShowUploader(!showUploader)}
-                        className="text-xs text-slate-400 hover:text-white underline"
-                    >
-                        {showUploader ? "Hide Upload" : "Change Resume"}
-                    </button>
+            <div className="card p-4 mb-4">
+                <div className="flex items-center justify-between">
+                    <span className="text-[11px] tracking-wide uppercase" style={{ color:'var(--text-faint)'}}>Your resume</span>
+                    <button onClick={()=>setShowUploader(!showUploader)} className="text-xs font-medium underline" style={{ color:'var(--text)'}}>{showUploader?'Hide':'Change'}</button>
                 </div>
-
-                {showUploader && (
-                    <div className="animate-in fade-in slide-in-from-top-2 duration-300">
-                        <input
-                            type="file"
-                            accept=".pdf,.docx,.txt,image/*"
-                            onChange={handleFileUpload}
-                            className="block w-full text-sm text-slate-400
-                            file:mr-4 file:py-2 file:px-4
-                            file:rounded-full file:border-0
-                            file:text-xs file:font-bold
-                            file:bg-blue-600 file:text-white
-                            hover:file:bg-blue-500
-                            cursor-pointer bg-slate-950 rounded-lg border border-slate-700 mb-2"
-                        />
-                        <p className="text-[10px] text-slate-500 text-center">Supported: PDF, DOCX, TXT, Scanned Images. Data is parsed locally.</p>
-                    </div>
-                )}
+                {status && <div className="mt-2 text-xs px-2.5 py-1 rounded-full border w-fit" style={{ borderColor:'var(--border)', color:'var(--text-muted)'}}>{status}</div>}
+                {showUploader && <div className="mt-3"><input type="file" accept=".pdf,.docx,.txt,image/*" onChange={handleFile} className="block w-full text-xs file:mr-3 file:py-2 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-medium file:bg-[#0A0A0A] dark:file:bg-white file:text-white dark:file:text-black" /></div>}
             </div>
 
-            {/* Global JD Input */}
-            <div className="mb-6">
-                <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">Target Job Description (Paste Here for AI Tailoring)</label>
-                <textarea
-                    value={jobDescription}
-                    onChange={(e) => setJobDescription(e.target.value)}
-                    placeholder="Paste the full job post here... (The AI will use this to tailor your Resume Score and Cover Letter)"
-                    className="w-full bg-slate-950 border border-slate-800 rounded p-3 text-sm text-slate-300 focus:border-blue-500 outline-none h-24 resize-none"
-                />
+            <div className="card p-4 mb-4">
+                <div className="text-[11px] tracking-wide uppercase mb-2" style={{ color:'var(--text-faint)'}}>Job description</div>
+                <textarea value={jobDescription} onChange={(e)=>setJobDescription(e.target.value)} placeholder="Paste job post here…" className="w-full h-28 rounded-lg border p-3 text-[13px] resize-none" style={{ background:'var(--surface-2)', borderColor:'var(--border)', color:'var(--text)'}} />
             </div>
 
-            <div className="flex space-x-2 mb-6">
-                <button onClick={() => setActiveTab('ats')} className={`flex-1 py-2 rounded font-bold transition-all ${activeTab === 'ats' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'bg-slate-800 text-slate-400'}`}>
-                    📊 ATS Score
-                </button>
-                <button onClick={() => setActiveTab('coverLetter')} className={`flex-1 py-2 rounded font-bold transition-all ${activeTab === 'coverLetter' ? 'bg-pink-600 text-white shadow-lg shadow-pink-900/50' : 'bg-slate-800 text-slate-400'}`}>
-                    ✍️ Cover Letter
-                </button>
-                <button onClick={() => setActiveTab('predict')} className={`flex-1 py-2 rounded font-bold transition-all ${activeTab === 'predict' ? 'bg-purple-600 text-white shadow-lg shadow-purple-900/50' : 'bg-slate-800 text-slate-400'}`}>
-                    🔮 Predict Qs
-                </button>
+            <div className="flex gap-2 mb-4">
+                {[
+                    {id:'ats',l:'ATS Score'},
+                    {id:'coverLetter',l:'Cover Letter'},
+                    {id:'predict',l:'Predict Qs'},
+                ].map(t=>(
+                    <button key={t.id} onClick={()=>setActiveTab(t.id)} className={`flex-1 py-2.5 rounded-lg text-[13px] font-medium border ${activeTab===t.id?'bg-[#0A0A0A] text-white dark:bg-white dark:text-black':'bg-transparent'}`} style={activeTab!==t.id?{borderColor:'var(--border)', color:'var(--text-muted)'}:{borderColor:'#0A0A0A'}}>{t.l}</button>
+                ))}
             </div>
 
-            {activeTab === 'ats' && (
-                <div className="space-y-6">
-                    {!analysis ? (
-                        <div className="text-center py-12 border-2 border-dashed border-slate-800 rounded-xl">
-                            <p className="mb-4 text-slate-400">Analyze your resume against the Job Description above.</p>
-                            <button
-                                onClick={runAnalysis}
-                                disabled={loading}
-                                className="bg-blue-600 hover:bg-blue-500 text-white px-8 py-3 rounded-lg font-bold transition-all flex items-center justify-center mx-auto gap-2"
-                            >
-                                {loading ? <span className="animate-spin">⏳</span> : "🔍"}
-                                {loading ? "Analyzing..." : "Run Tailored ATS Scan"}
-                            </button>
+            {activeTab==='ats' && (
+                <div>
+                    {loading ? <div className="skeleton h-40 rounded-xl" /> : !analysis ? (
+                        <div className="card p-8 text-center">
+                            <p className="text-[13px]" style={{ color:'var(--text-muted)'}}>Get your match score.</p>
+                            <button onClick={()=>{ setLoading(true); socket.emit('analyzeResume',{jobDescription}); }} className="mt-4 px-6 py-2.5 rounded-lg bg-[#0A0A0A] dark:bg-white text-white dark:text-black text-[13px] font-medium">Run scan</button>
                         </div>
                     ) : (
-                        <div className="animate-in fade-in zoom-in-95 duration-300">
-                            {/* Score Header */}
-                            <div className="flex items-center justify-between bg-slate-800 p-6 rounded-xl border border-slate-700 mb-6 relative overflow-hidden">
-                                <div className={`absolute top-0 left-0 w-2 h-full ${analysis.score > 80 ? 'bg-green-500' : 'bg-yellow-500'}`}></div>
+                        <div className="space-y-4">
+                            <div className="card p-5 flex items-center gap-5">
+                                <ScoreGauge score={analysis.score} />
                                 <div>
-                                    <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">Match Score</h3>
-                                    <div className={`text-5xl font-black ${analysis.score > 80 ? 'text-green-400' : 'text-yellow-400'}`}>
-                                        {analysis.score}<span className="text-2xl text-slate-600">/100</span>
-                                    </div>
-                                </div>
-                                <div className="text-right max-w-[60%]">
-                                    <h3 className="text-xs font-bold text-slate-500 uppercase">AI Verdict</h3>
-                                    <div className="text-lg font-medium text-white leading-tight mt-1">{analysis.summary}</div>
+                                    <div className="text-[11px] tracking-wide uppercase" style={{ color:'var(--text-faint)'}}>Verdict</div>
+                                    <p className="text-[13px] font-medium mt-1 leading-relaxed">{analysis.summary}</p>
                                 </div>
                             </div>
-
-                            {/* Missing Keywords */}
-                            <div className="bg-slate-950 p-6 rounded-xl border border-red-900/30 mb-6">
-                                <h3 className="text-red-400 font-bold mb-3 flex items-center gap-2">
-                                    🛑 Missing Keywords (Critical for {jobDescription ? 'this specific job' : 'this role'})
-                                </h3>
-                                <div className="flex flex-wrap gap-2">
-                                    {analysis.keywords_missing.map((kw, i) => (
-                                        <span key={i} className="px-3 py-1 bg-red-900/20 text-red-300 rounded-full text-sm border border-red-900/50">
-                                            {kw}
-                                        </span>
-                                    ))}
+                            <div className="card p-4">
+                                <div className="text-xs font-semibold mb-2">Missing keywords</div>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {(analysis.keywords_missing||[]).map((kw,i)=><span key={i} className="px-2.5 py-1 rounded-full text-xs border" style={{ borderColor:'var(--border)', background:'var(--surface-2)'}}>{kw}</span>)}
                                 </div>
                             </div>
-
-                            {/* Improvements */}
-                            <div>
-                                <h3 className="text-blue-400 font-bold mb-4">✨ AI Suggested Improvements</h3>
-                                <div className="space-y-4">
-                                    {analysis.improvements.map((item, i) => (
-                                        <div key={i} className="bg-slate-800 p-4 rounded-lg border border-slate-700">
-                                            <div className="text-slate-500 line-through text-xs mb-2 bg-slate-900 p-2 rounded w-fit">{item.original}</div>
-                                            <div className="text-green-300 font-medium flex items-start text-sm">
-                                                <span className="mr-2 mt-1">🚀</span>
-                                                {item.improved}
-                                            </div>
+                            <div className="card p-4">
+                                <div className="text-xs font-semibold mb-2">Fixes</div>
+                                <div className="space-y-2">
+                                    {(analysis.improvements||[]).map((it,i)=>(
+                                        <div key={i} className="rounded-lg border p-3" style={{ borderColor:'var(--border)', background:'var(--surface-2)'}}>
+                                            <div className="text-xs line-through" style={{ color:'var(--text-faint)'}}>{it.original}</div>
+                                            <div className="text-[13px] font-medium mt-1">→ {it.improved}</div>
                                         </div>
                                     ))}
                                 </div>
                             </div>
-
-                            <button
-                                onClick={runAnalysis}
-                                disabled={loading}
-                                className={`w-full mt-6 py-3 rounded border border-slate-600 flex items-center justify-center gap-2 transition-all ${loading ? 'bg-slate-900 text-slate-500 cursor-not-allowed' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}`}
-                            >
-                                {loading ? <span className="animate-spin">⏳</span> : "🔄"}
-                                {loading ? "Re-Scanning..." : "Re-Scan"}
-                            </button>
                         </div>
                     )}
                 </div>
             )}
 
-            {activeTab === 'coverLetter' && (
-                <div className="space-y-6">
-                    {!coverLetter ? (
-                        <div className="text-center py-12 border-2 border-dashed border-slate-800 rounded-xl">
-                            <h3 className="text-xl font-bold text-white mb-2">Generate Tailored Cover Letter</h3>
-                            <p className="mb-6 text-slate-400 text-sm max-w-md mx-auto">
-                                The AI will analyze your resume and the Job Description to write a compelling, professional cover letter that highlights why YOU are the perfect fit.
-                            </p>
-                            <button
-                                onClick={runCoverLetter}
-                                disabled={loading}
-                                className="bg-pink-600 hover:bg-pink-500 text-white px-8 py-3 rounded-lg font-bold transition-all flex items-center justify-center mx-auto gap-2 shadow-lg shadow-pink-900/20"
-                            >
-                                {loading ? <span className="animate-spin">⏳</span> : "✍️"}
-                                {loading ? "Writing..." : "Generate Cover Letter"}
-                            </button>
-                        </div>
-                    ) : (
-                        <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                            <div className="bg-slate-100 text-slate-900 p-8 rounded-xl shadow-2xl font-serif leading-relaxed whitespace-pre-wrap">
-                                {coverLetter}
-                            </div>
-                            <div className="flex gap-4 mt-6">
-                                <button
-                                    onClick={() => navigator.clipboard.writeText(coverLetter)}
-                                    className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded font-bold"
-                                >
-                                    📋 Copy Text
-                                </button>
-                                <button
-                                    onClick={runCoverLetter}
-                                    className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded"
-                                >
-                                    🔄 Regenerate
-                                </button>
-                            </div>
-                        </div>
-                    )}
-                </div>
-            )}
-
-            {activeTab === 'predict' && (
-                <div className="space-y-6">
-                    {!questions.length ? (
-                        <div className="text-center py-12 border-2 border-dashed border-slate-800 rounded-xl">
-                            <p className="mb-4 text-slate-400">Generate likely questions based on the Job Description.</p>
-                            <button
-                                onClick={activePrediction}
-                                disabled={loading}
-                                className="bg-purple-600 hover:bg-purple-500 text-white px-6 py-3 rounded-lg font-bold transition-all shadow-lg shadow-purple-900/20"
-                            >
-                                {loading ? "Predicting..." : "Generate Predictions"}
-                            </button>
+            {activeTab==='coverLetter' && (
+                <div>
+                    {loading ? <div className="skeleton h-48 rounded-xl" /> : !coverLetter ? (
+                        <div className="card p-8 text-center">
+                            <p className="text-[13px]" style={{ color:'var(--text-muted)'}}>Generate a tailored cover letter.</p>
+                            <button onClick={()=>{ if(!jobDescription.trim()) return toast('Paste job description','error'); setLoading(true); socket.emit('generateCoverLetter',{jobDescription}); }} className="mt-4 px-6 py-2.5 rounded-lg bg-[#0A0A0A] dark:bg-white text-white dark:text-black text-[13px] font-medium">Generate</button>
                         </div>
                     ) : (
                         <div className="space-y-3">
-                            {questions.map((q, i) => (
-                                <div key={i} className="p-4 bg-slate-800 rounded-lg border border-slate-700 flex items-start hover:bg-slate-750 transition-colors">
-                                    <span className="text-purple-400 font-bold mr-3">Q{i + 1}.</span>
-                                    <span className="text-slate-200 text-lg">{q}</span>
-                                </div>
-                            ))}
-                            <button
-                                onClick={activePrediction}
-                                disabled={loading}
-                                className="mt-6 w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-600"
-                            >
-                                🔄 Refresh Predictions
-                            </button>
+                            <div className="rounded-xl border p-6 text-[13px] leading-relaxed whitespace-pre-wrap" style={{ background:'white', color:'#0A0A0A', borderColor:'var(--border)'}}>{coverLetter}</div>
+                            <div className="flex gap-2">
+                                <button onClick={()=>{ navigator.clipboard.writeText(coverLetter); toast('Copied','success'); }} className="flex-1 py-2.5 rounded-lg border text-[13px] font-medium" style={{ borderColor:'var(--border)'}}>Copy</button>
+                                <button onClick={()=>{ const b=new Blob([coverLetter],{type:'text/plain'}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download='cover-letter.txt'; a.click(); URL.revokeObjectURL(u); }} className="flex-1 py-2.5 rounded-lg border text-[13px] font-medium" style={{ borderColor:'var(--border)'}}>Download</button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {activeTab==='predict' && (
+                <div>
+                    {loading ? <div className="skeleton h-40 rounded-xl" /> : !questions.length ? (
+                        <div className="card p-8 text-center">
+                            <button onClick={()=>{ setLoading(true); socket.emit('predictQuestions'); }} className="px-6 py-2.5 rounded-lg bg-[#0A0A0A] dark:bg-white text-white dark:text-black text-[13px] font-medium">Predict questions</button>
+                        </div>
+                    ) : (
+                        <div className="space-y-2">
+                            {questions.map((q,i)=><div key={i} className="card p-4 text-[13px] flex gap-2"><span style={{ color:'var(--text-faint)'}}>Q{i+1}.</span> {q}</div>)}
                         </div>
                     )}
                 </div>

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { toast } from './Toaster';
 
 const ResumeUploader = ({ socket, apiBaseUrl, onClose }) => {
     const [resumeText, setResumeText] = useState("");
@@ -7,94 +8,60 @@ const ResumeUploader = ({ socket, apiBaseUrl, onClose }) => {
 
     const handleSubmit = (e) => {
         e.preventDefault();
-        if (resumeText.trim().length < 10) {
-            setStatus("Resume text too short.");
-            return;
-        }
-
+        if (resumeText.trim().length < 10) { setStatus("Add a bit more text — at least a paragraph."); return; }
         socket.emit('updateResume', resumeText);
-        setStatus("Resume sent to Interview Coach! ✅");
-        setTimeout(() => {
-            onClose();
-        }, 1500); // Close after success msg
+        toast('Resume context active — try the Copilot now', 'success');
+        setTimeout(() => onClose(), 900);
     };
 
     return (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 backdrop-blur-sm p-4">
-            <div className="bg-slate-900 border border-slate-700 w-full max-w-lg p-6 rounded-xl shadow-2xl relative">
-                <button
-                    onClick={onClose}
-                    className="absolute top-4 right-4 text-slate-400 hover:text-white"
-                >
-                    ✕
-                </button>
-
-                <h2 className="text-2xl font-bold mb-2 text-white">Upload Context</h2>
-                <p className="text-slate-400 mb-4 text-sm">Upload your resume (PDF/DOCX) or paste text. The AI will tailor answers to this context.</p>
-
-                <div className="mb-4 bg-slate-800/50 p-4 rounded-lg border border-slate-700 border-dashed">
-                    <label className="block text-blue-300 text-xs font-bold mb-2 uppercase tracking-wide">
-                        📁 Upload File
-                    </label>
-                    <input
-                        type="file"
-                        accept=".pdf,.docx,.txt"
-                        onChange={async (e) => {
-                            const file = e.target.files[0];
-                            if (!file) return;
-                            setUploading(true);
-                            setStatus("Uploading & Parsing...");
-
-                            const formData = new FormData();
-                            formData.append('file', file);
-
-                            try {
-                                 const res = await fetch(`${apiBaseUrl}/api/upload-resume`, {
-                                    method: 'POST',
-                                    body: formData
-                                });
-                                const data = await res.json();
-                                if (data.success) {
-                                    setResumeText(data.text);
-                                    setStatus(`Success! Extracted ${data.text.length} characters.`);
-                                } else {
-                                    setStatus(`Server Error: ${data.error || "Unknown"}`);
-                                }
-                            } catch (err) {
-                                console.error(err);
-                                setStatus(`Network Error: ${err.message}`);
-                            } finally {
-                                setUploading(false);
-                            }
-                        }}
-                        className="block w-full text-sm text-slate-400
-                        file:mr-4 file:py-2 file:px-4
-                        file:rounded-full file:border-0
-                        file:text-xs file:font-bold
-                        file:bg-blue-600 file:text-white
-                        hover:file:bg-blue-500
-                        cursor-pointer"
-                    />
-                    {uploading && <p className="text-xs text-blue-400 mt-2 animate-pulse">Processing...</p>}
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 backdrop-blur-sm p-4">
+            <div className="w-full max-w-lg rounded-[20px] border border-slate-800 bg-slate-900 shadow-2xl overflow-hidden animate-fade-up">
+                <div className="mesh-hero p-6 pb-5 border-b border-slate-800">
+                    <div className="flex items-center justify-between">
+                        <h2 className="text-lg font-black text-white">Add your resume</h2>
+                        <button onClick={onClose} className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/15 text-white flex items-center justify-center">✕</button>
+                    </div>
+                    <p className="text-sm text-slate-400 mt-1">Upload a file or paste text. The AI will tailor every answer to you.</p>
                 </div>
 
-                <div className="text-center text-slate-600 text-xs mb-4 font-bold">- OR PASTE TEXT -</div>
+                <div className="p-6 space-y-4">
+                    <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950 p-4">
+                        <div className="text-[11px] font-bold tracking-widest uppercase text-slate-500 mb-2">Upload file</div>
+                        <input
+                            type="file"
+                            accept=".pdf,.docx,.txt"
+                            onChange={async (e) => {
+                                const file = e.target.files[0]; if (!file) return;
+                                setUploading(true); setStatus("Reading file…");
+                                const formData = new FormData(); formData.append('file', file);
+                                try {
+                                    const res = await fetch(`${apiBaseUrl}/api/upload-resume`, { method: 'POST', body: formData });
+                                    const data = await res.json();
+                                    if (data.success) { setResumeText(data.text); setStatus(`Ready — ${(data.text.length/1000).toFixed(1)}k characters`); }
+                                    else setStatus(`Error: ${data.error || "Unknown"}`);
+                                } catch (err) { setStatus(`Network error: ${err.message}`); }
+                                finally { setUploading(false); }
+                            }}
+                            className="block w-full text-sm text-slate-400 file:mr-3 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-white file:text-slate-900 hover:file:bg-slate-100 cursor-pointer"
+                        />
+                        {uploading && <p className="text-xs font-semibold text-sky-300 mt-2">Processing…</p>}
+                        {status && <p className="text-xs font-bold text-emerald-300 mt-2">{status}</p>}
+                    </div>
 
-                <textarea
-                    className="w-full h-32 bg-slate-950 border border-slate-800 rounded p-3 text-sm text-slate-300 focus:border-blue-500 focus:outline-none resize-none font-mono"
-                    placeholder="Paste text here..."
-                    value={resumeText}
-                    onChange={(e) => setResumeText(e.target.value)}
-                ></textarea>
+                    <div className="text-center text-[11px] font-bold tracking-widest uppercase text-slate-600">— or paste —</div>
 
-                <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mt-4">
-                    <span className="text-green-400 text-sm font-bold text-center sm:text-left">{status}</span>
-                    <button
-                        onClick={handleSubmit}
-                        className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-bold transition-colors w-full sm:w-auto"
-                    >
-                        Start Using Context
+                    <label className="block">
+                        <span className="text-[11px] font-bold tracking-widest uppercase text-slate-500">Paste resume text</span>
+                        <textarea value={resumeText} onChange={(e)=>setResumeText(e.target.value)} placeholder="Paste your resume here… The more detail, the better the AI can personalize." className="mt-1.5 w-full h-36 rounded-xl bg-slate-950 border border-slate-800 p-3.5 text-sm text-slate-200 placeholder:text-slate-500 focus:border-violet-500 resize-none leading-relaxed" />
+                    </label>
+                </div>
+
+                <div className="p-6 pt-0">
+                    <button onClick={handleSubmit} className="w-full py-3 rounded-lg bg-[#0A0A0A] dark:bg-white text-white dark:text-black text-[13px] font-medium">
+                        Use this resume
                     </button>
+                    <p className="text-xs text-center mt-2" style={{ color: 'var(--text-faint)'}}>Stored only in this session.</p>
                 </div>
             </div>
         </div>

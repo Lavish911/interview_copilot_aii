@@ -66,7 +66,7 @@ async function testUpload() {
         fs.writeFileSync(dummyPath, "This is a test resume for John Doe. Skills: JavaScript, React, Node.js.");
 
         const form = new FormData();
-        form.append('resume', fs.createReadStream(dummyPath));
+        form.append('file', fs.createReadStream(dummyPath));
 
         const res = await fetch(`${SERVER_URL}/api/upload-resume`, {
             method: 'POST',
@@ -76,7 +76,7 @@ async function testUpload() {
         const json = await res.json();
         console.log("📤 Upload Response:", json);
 
-        if (json.status === 'success') {
+        if (json.success) {
             console.log("✅ [Upload] Resume Uploaded Successfully.");
             results.upload = 'PASS';
 

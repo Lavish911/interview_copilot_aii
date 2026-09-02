@@ -180,23 +180,30 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
         // We let 'continuous' keep running or let 'onend' restart it.
     };
 
-    const toggleListening = () => {
+    const toggleListening = async () => {
         setErrorMessage("");
 
         if (window.location.hostname !== 'localhost' && window.location.protocol === 'http:') {
-            setErrorMessage("⚠️ HTTPS Required for Mic on Network!");
+            setErrorMessage("⚠️ HTTPS Required for Mic on Network! Use localhost or HTTPS.");
             return;
         }
 
         if (isListening) {
-            // Turning OFF
             setIsListening(false);
-            isListeningRef.current = false; // Sync immediately
+            isListeningRef.current = false;
             stopSpeechEngine();
         } else {
-            // Turning ON
+            if (navigator.mediaDevices?.getUserMedia) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    stream.getTracks().forEach(t => t.stop());
+                } catch (err) {
+                    setErrorMessage(err.name === 'NotAllowedError' ? "⚠️ Mic blocked — click the lock icon → Allow microphone, then try again." : `⚠️ Mic error: ${err.message}`);
+                    return;
+                }
+            }
             setIsListening(true);
-            isListeningRef.current = true; // Sync immediately
+            isListeningRef.current = true;
             startSpeechEngine();
         }
     };
@@ -228,68 +235,54 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
     }, [socket, onTranscript]);
 
     return (
-        <div className="flex flex-col items-center p-4 bg-slate-800 rounded-lg shadow-lg relative w-full">
+        <div className="card p-4 relative w-full">
             {errorMessage && (
-                <div className="absolute -top-10 bg-red-600 text-white text-xs font-bold px-3 py-1 rounded animate-bounce z-50">
+                <div className="mb-3 border text-xs font-medium px-3 py-2 rounded-lg" style={{ background:'rgba(220,38,38,0.08)', borderColor:'rgba(220,38,38,0.2)', color:'#DC2626'}}>
                     {errorMessage}
                 </div>
             )}
 
-            {/* Turbo Text Visual */}
             {isListening && !isMuted && (
-                <div className="mb-2 h-6 w-full text-center">
+                <div className="mb-3 min-h-[24px] flex items-center justify-center">
                     {interimText ? (
-                        <p className="text-cyan-400 text-xs font-mono animate-pulse truncate px-4">
-                            "...{interimText.slice(-40)}"
+                        <p className="text-xs px-2.5 py-1 rounded-full border truncate max-w-full" style={{ background:'var(--surface-2)', borderColor:'var(--border)', color:'var(--text)'}}>
+                            “{interimText.slice(-48)}”
                         </p>
                     ) : (
-                        <div className="flex justify-center gap-1 h-full items-center">
-                            <div className="w-1 h-1 bg-gray-600 rounded-full animate-bounce delay-0"></div>
-                            <div className="w-1 h-1 bg-gray-600 rounded-full animate-bounce delay-75"></div>
-                            <div className="w-1 h-1 bg-gray-600 rounded-full animate-bounce delay-150"></div>
-                        </div>
+                        <span className="text-xs" style={{ color:'var(--text-faint)'}}>Listening… speak now</span>
                     )}
                 </div>
             )}
 
-            {/* Status Icons */}
-            <div className="flex gap-4 mb-3">
-                <div className={`w-4 h-4 rounded-full ${isListening ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`} title="Mic Power"></div>
-                <div className={`w-4 h-4 rounded-full ${isMuted ? 'bg-yellow-500' : 'bg-transparent border border-gray-500'}`} title="Input Ignored"></div>
+            <div className="flex items-center justify-center gap-2 mb-3 text-[11px] tracking-wide uppercase" style={{ color:'var(--text-faint)'}}>
+                <span className={`w-1.5 h-1.5 rounded-full ${isListening ? 'bg-emerald-500' : 'bg-[#D4D4D4]'}`} />
+                {isListening ? 'Mic on' : 'Mic off'}
+                <span>·</span>
+                {isMuted ? 'Paused' : 'Active'}
             </div>
 
             <div className="flex gap-2">
-                {/* Main Power Button */}
                 <button
                     onClick={toggleListening}
-                    className={`px-4 py-2 rounded-lg font-bold transition-all text-sm ${isListening
-                        ? 'bg-red-900/50 hover:bg-red-900 text-red-100 border border-red-500'
-                        : 'bg-green-600 hover:bg-green-700 text-white'
-                        }`}
+                    className={`flex-1 py-2.5 rounded-lg text-[13px] font-medium border transition-colors ${isListening ? '' : 'bg-[#0A0A0A] dark:bg-white text-white dark:text-black border-[#0A0A0A] dark:border-white'}`}
+                    style={isListening ? { background:'var(--surface-2)', borderColor:'var(--border)', color:'var(--text)'} : {}}
                 >
-                    {isListening ? 'OFF' : 'Power ON'}
+                    {isListening ? 'Stop' : 'Start listening'}
                 </button>
 
-                {/* Mute Toggle */}
                 {isListening && (
                     <button
                         onClick={toggleMute}
-                        className={`px-6 py-2 rounded-lg font-bold transition-all flex items-center gap-2 ${isMuted
-                            ? 'bg-yellow-500 text-black hover:bg-yellow-400'
-                            : 'bg-slate-700 hover:bg-slate-600 text-gray-200 border border-slate-500'
-                            }`}
+                        className={`flex-1 py-2.5 rounded-lg text-[13px] font-medium border ${isMuted ? 'bg-[#0A0A0A] dark:bg-white text-white dark:text-black border-[#0A0A0A]' : ''}`}
+                        style={!isMuted ? { background:'var(--surface)', borderColor:'var(--border)', color:'var(--text)'} : {}}
                     >
-                        {isMuted ? '🤐 PAUSED (Reading)' : '👂 Listening'}
+                        {isMuted ? 'Resume' : 'Pause'}
                     </button>
                 )}
             </div>
 
-            <p className="mt-3 text-xs text-gray-400 text-center">
-                {isMuted
-                    ? '⚠️ INPUT IGNORED. Read your answer now.'
-                    : isListening ? 'Listening (Turbo Mode)...' : 'Mic is Off'}
-                <br />
-                <span className="opacity-50">(hit SPACE to toggle)</span>
+            <p className="mt-2 text-[11px] text-center" style={{ color:'var(--text-faint)'}}>
+                Press <span className="px-1 py-0.5 rounded border text-[11px]" style={{ background:'var(--surface-2)', borderColor:'var(--border)'}}>Space</span> to pause/resume
             </p>
         </div>
     );
