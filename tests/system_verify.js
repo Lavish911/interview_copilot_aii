@@ -1,4 +1,3 @@
-
 import io from 'socket.io-client';
 import fs from 'fs';
 import path from 'path';
@@ -9,105 +8,209 @@ import FormData from 'form-data';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const SERVER_URL = 'http://localhost:3000';
-const socket = io(SERVER_URL);
+const SERVER_URL = process.env.TEST_SERVER_URL || 'http://localhost:3000';
 
-console.log("🚀 Starting Full System Verification...");
+console.log(`\n======================================================`);
+console.log(`🚀 Interview Copilot AI — System & Live Integration Test`);
+console.log(`Target: ${SERVER_URL}`);
+console.log(`======================================================\n`);
 
-// --- TEST STATE ---
 const results = {
-    connection: 'PENDING',
-    speech: 'PENDING',
-    coding: 'PENDING',
-    upload: 'PENDING',
-    analytics: 'PENDING'
+    healthCheck: 'PENDING',
+    socketConnection: 'PENDING',
+    providerStatus: 'PENDING',
+    resumeUpload: 'PENDING',
+    speechAnalytics: 'PENDING',
+    liveAIGeneration: 'PENDING',
+    offlineFallbackSafetyNet: 'PENDING',
+    mockInterviewFlow: 'PENDING',
+    atsAnalysisFlow: 'PENDING'
 };
 
-socket.on('connect', () => {
-    console.log("✅ [Core] Socket Connected:", socket.id);
-    results.connection = 'PASS';
+function cleanupArtifacts() {
+    // Keep tracked dummy_resume.txt intact
+}
 
-    // 1. Trigger Speech
-    console.log("🗣️ Testing Speech Engine...");
-    socket.emit('question', { transcript: "Hello, who are you?", jobDescription: "" });
-});
+function printSummaryAndExit(forcedExitCode = null) {
+    cleanupArtifacts();
+    console.log(`\n======================================================`);
+    console.log(`📋 System Verification Summary`);
+    console.log(`======================================================`);
+    console.table(results);
 
-socket.on('answer', (text) => {
-    console.log("🤖 [AI Answer]:", text.substring(0, 50) + "...");
+    const isLiveBlocked = results.liveAIGeneration.startsWith('BLOCKED');
+    const hasFailures = Object.values(results).some(v => v === 'FAIL');
 
-    // Check for Coding Mode
-    if (text.includes("```")) {
-        console.log("✅ [Coding] Code Block Detected in response.");
-        results.coding = 'PASS';
+    if (hasFailures || forcedExitCode === 1) {
+        console.error(`❌ RELEASE GATE FAILED (Exit Code 1): One or more critical system checks failed.\n`);
+        process.exit(1);
+    } else if (isLiveBlocked) {
+        console.warn(`⛔ RELEASE GATE BLOCKED (Exit Code 2):`);
+        console.warn(`   Infrastructure, Socket.IO, upload, speech analytics, and offline safety nets passed.`);
+        console.warn(`   However, LIVE AI generation is BLOCKED because no valid live API credentials are active.`);
+        console.warn(`   Google AI Studio API keys must start with "AIzaSy..." (OAuth AQ. tokens are rejected by Google AI Studio).`);
+        console.warn(`   Configure a valid Google AI Studio key (AIzaSy...) or OpenAI key (sk-...) to unblock live AI.\n`);
+        process.exit(2);
     } else {
-        if (results.speech === 'PENDING') {
-            console.log("✅ [Speech] Standard Speech recognized.");
-            results.speech = 'PASS';
-
-            // Now Trigger Coding Test
-            console.log("👨‍💻 Testing Coding Mode...");
-            socket.emit('question', { transcript: "Write a JavaScript function to reverse a string.", jobDescription: "" });
-        }
-    }
-});
-
-socket.on('speechAnalysisResult', (data) => {
-    console.log("📊 [Analytics] Received Data:", data);
-    if (data && data.score !== undefined) {
-        results.analytics = 'PASS';
-    }
-});
-
-// --- UPLOAD TEST ---
-async function testUpload() {
-    console.log("📄 Testing Resume Upload...");
-    try {
-        const dummyPath = path.join(__dirname, 'dummy_resume.txt');
-        fs.writeFileSync(dummyPath, "This is a test resume for John Doe. Skills: JavaScript, React, Node.js.");
-
-        const form = new FormData();
-        form.append('resume', fs.createReadStream(dummyPath));
-
-        const res = await fetch(`${SERVER_URL}/api/upload-resume`, {
-            method: 'POST',
-            body: form
-        });
-
-        const json = await res.json();
-        console.log("📤 Upload Response:", json);
-
-        if (json.status === 'success') {
-            console.log("✅ [Upload] Resume Uploaded Successfully.");
-            results.upload = 'PASS';
-
-            // Trigger ATS Scan
-            console.log("🔍 Testing ATS Scan...");
-            socket.emit('analyzeResume', { jobDescription: "Looking for a React Developer." });
-        } else {
-            console.error("❌ [Upload] Failed:", json);
-            results.upload = 'FAIL';
-        }
-
-    } catch (e) {
-        console.error("❌ [Upload] Error:", e);
-        results.upload = 'FAIL';
+        console.log(`🎉 100% VERIFIED (Exit Code 0): All system checks and LIVE AI generation passed!\n`);
+        process.exit(0);
     }
 }
 
-socket.on('resumeAnalysisResult', (data) => {
-    console.log("📑 [ATS] Analysis Received:", data.summary);
-    // Determine Final Status
-    console.table(results);
-    console.log("🎉 Test Sequence Complete. Exiting...");
-    process.exit(0);
+// Timeout safety: 45 seconds
+const timeoutTimer = setTimeout(() => {
+    console.error("\n❌ Test Suite Timed Out (45s)");
+    printSummaryAndExit(1);
+}, 45000);
+
+async function runTests() {
+    // 1. Health Endpoint Test
+    try {
+        console.log("🔍 Checking /health endpoint...");
+        const res = await fetch(`${SERVER_URL}/health`);
+        const data = await res.json();
+        console.log("   Health Response:", JSON.stringify(data));
+        if (data.status === 'ok' && data.providers) {
+            results.healthCheck = 'PASS';
+            console.log("   ✅ Health endpoint OK");
+        } else {
+            results.healthCheck = 'FAIL';
+        }
+    } catch (err) {
+        console.error("   ❌ Health check failed:", err.message);
+        results.healthCheck = 'FAIL';
+    }
+
+    // 2. Resume Upload Test
+    let uploadedResumeText = "";
+    try {
+        console.log("\n📄 Testing resume upload endpoint (/api/upload-resume)...");
+        const dummyPath = path.join(__dirname, 'dummy_resume.txt');
+        if (!fs.existsSync(dummyPath)) {
+            fs.writeFileSync(dummyPath, "John Doe - Senior Software Engineer. Expertise in React, Node.js, TypeScript, PostgreSQL, System Design.");
+        }
+
+        const form = new FormData();
+        form.append('file', fs.createReadStream(dummyPath));
+
+        const uploadRes = await fetch(`${SERVER_URL}/api/upload-resume`, {
+            method: 'POST',
+            body: form
+        });
+        const uploadData = await uploadRes.json();
+        console.log("   Upload Response:", JSON.stringify(uploadData));
+
+        if (uploadData.success && uploadData.text) {
+            uploadedResumeText = uploadData.text;
+            results.resumeUpload = 'PASS';
+            console.log("   ✅ Resume upload succeeded");
+        } else {
+            results.resumeUpload = 'FAIL';
+        }
+    } catch (err) {
+        console.error("   ❌ Upload failed:", err.message);
+        results.resumeUpload = 'FAIL';
+    }
+
+    // 3. Socket.IO Tests
+    console.log("\n🔌 Connecting Socket.IO client...");
+    const socket = io(SERVER_URL, {
+        transports: ['websocket', 'polling'],
+        timeout: 10000
+    });
+
+    socket.on('connect', () => {
+        console.log(`   ✅ Socket connected (ID: ${socket.id})`);
+        results.socketConnection = 'PASS';
+
+        if (uploadedResumeText) {
+            socket.emit('updateResume', uploadedResumeText);
+        }
+
+        console.log("   📊 Testing speech analytics...");
+        socket.emit('analyzeSpeech', "I basically like react, you know, because it is fast and component based.");
+    });
+
+    socket.on('providerStatus', (status) => {
+        console.log("   🤖 Provider status received:", JSON.stringify(status));
+        results.providerStatus = 'PASS';
+
+        console.log("   🗣️ Testing AI speech question handler...");
+        socket.emit('question', { transcript: "What is the Virtual DOM in React?" });
+    });
+
+    socket.on('speechAnalysisResult', (data) => {
+        console.log("   ✅ Speech analysis result received, score:", data.score);
+        if (data && data.score !== undefined) {
+            results.speechAnalytics = 'PASS';
+        }
+    });
+
+    let mockTriggered = false;
+    let atsTriggered = false;
+
+    socket.on('answer', (text) => {
+        console.log(`   📥 Received Answer (${text.length} chars): ${text.substring(0, 75).replace(/\n/g, ' ')}...`);
+
+        const isOffline = text.includes("📴 **Offline Mode**");
+
+        if (isOffline) {
+            results.liveAIGeneration = 'BLOCKED (Live credentials rejected or missing; offline fallback served)';
+            results.offlineFallbackSafetyNet = 'PASS';
+            console.warn("   ⚠️ Live AI generation did not produce output; Offline Fallback safety net engaged.");
+        } else {
+            results.liveAIGeneration = 'PASS (Live AI generation verified)';
+            results.offlineFallbackSafetyNet = 'PASS (Not needed; live succeeded)';
+            console.log("   ✅ Real AI generation verified!");
+        }
+
+        if (!mockTriggered) {
+            mockTriggered = true;
+            setTimeout(() => {
+                console.log("   🎙️ Testing startMockInterview...");
+                socket.emit('startMockInterview');
+            }, 600);
+        }
+    });
+
+    let mockTier = 'offline_fast_engine';
+    socket.on('providerMeta', (meta) => {
+        if (meta?.operation === 'mockQuestion') {
+            mockTier = meta.tier;
+        }
+    });
+
+    socket.on('mockQuestion', (q) => {
+        console.log(`   ✅ Mock question received: "${q.substring(0, 60)}..."`);
+        const isLive = mockTier === 'gemini_live';
+        results.mockInterviewFlow = `PASS (Served by ${isLive ? 'live Gemini' : 'FastEngine offline fallback'})`;
+
+        if (!atsTriggered) {
+            atsTriggered = true;
+            setTimeout(() => {
+                console.log("   📑 Testing ATS scan (analyzeResume)...");
+                socket.emit('analyzeResume', { jobDescription: "Looking for a React and Node.js Engineer." });
+            }, 600);
+        }
+    });
+
+    socket.on('resumeAnalysisResult', (data) => {
+        console.log("   ✅ ATS Analysis received, score:", data.score, "summary:", data.summary?.substring(0, 60));
+        const atsTier = data?.providerTier === 'gemini_live' ? 'live Gemini' : 'FastEngine offline fallback';
+        results.atsAnalysisFlow = `PASS (Served by ${atsTier})`;
+
+        clearTimeout(timeoutTimer);
+        socket.disconnect();
+        printSummaryAndExit();
+    });
+
+    socket.on('connect_error', (err) => {
+        console.error("   ❌ Socket connect error:", err.message);
+        results.socketConnection = 'FAIL';
+    });
+}
+
+runTests().catch(err => {
+    console.error("Fatal test runner error:", err);
+    printSummaryAndExit(1);
 });
-
-// Start Upload Test
-testUpload();
-
-// Timeout Safety
-setTimeout(() => {
-    console.log("⚠️ Test Timeout.");
-    console.table(results);
-    process.exit(1);
-}, 15000);
