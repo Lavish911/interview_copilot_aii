@@ -1,11 +1,12 @@
 import OpenAI from 'openai';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 
 // =============================================================================
 // CANONICAL MODELS CONFIGURATION
 // =============================================================================
 
 export const CANONICAL_GEMINI_MODELS = Object.freeze([
+    "gemini-2.5-flash",
     "gemini-2.0-flash",
     "gemini-2.0-flash-lite",
     "gemini-1.5-flash",
@@ -85,21 +86,38 @@ export function validateGeminiCredentialFormat(key) {
     if (cleanKey.includes('your_') || cleanKey.includes('placeholder') || cleanKey.length < 25) {
         return { valid: false, status: 'PLACEHOLDER', reason: 'Placeholder key detected' };
     }
-    if (cleanKey.startsWith('AQ.')) {
-        return {
-            valid: false,
-            status: 'INVALID_FORMAT_OAUTH_TOKEN',
-            reason: 'OAuth/Vertex token format starting with AQ. is unsupported by Google AI Studio API'
-        };
-    }
-    if (!cleanKey.startsWith('AIza')) {
+
+    // Google AI Studio supports both legacy standard API keys (starting with AIza)
+    // and modern authorization keys (starting with AQ., effective May 28, 2026).
+    const isLegacyKey = cleanKey.startsWith('AIza');
+    const isAuthKey = cleanKey.startsWith('AQ.');
+
+    if (!isLegacyKey && !isAuthKey) {
         return {
             valid: false,
             status: 'INVALID_FORMAT',
-            reason: 'Google AI Studio API keys must start with "AIza"'
+            reason: 'Gemini API credentials must start with "AIza" (standard key) or "AQ." (authorization key)'
         };
     }
-    return { valid: true, status: 'FORMAT_VALID', reason: 'Conforms to Google AI Studio API key format' };
+
+    // Verify key contains only valid URL-safe token characters without illegal spaces or symbols
+    const validKeyPattern = /^[A-Za-z0-9_.-]+$/;
+    if (!validKeyPattern.test(cleanKey)) {
+        return {
+            valid: false,
+            status: 'INVALID_CHARACTERS',
+            reason: 'Gemini credential contains invalid characters'
+        };
+    }
+
+    return {
+        valid: true,
+        status: 'FORMAT_VALID',
+        keyType: isAuthKey ? 'AUTHORIZATION_KEY' : 'STANDARD_KEY',
+        reason: isAuthKey
+            ? 'Conforms to Google AI Studio authorization key format (AQ.)'
+            : 'Conforms to Google AI Studio standard API key format (AIza)'
+    };
 }
 
 export function validateOpenAICredentialFormat(key) {
@@ -133,6 +151,7 @@ export function classifyError(error) {
         msg.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') ||
         msg.includes('API_KEY_INVALID') ||
         msg.includes('PERMISSION_DENIED') ||
+        msg.includes('UNAUTHENTICATED') ||
         status === 401 ||
         status === 403 ||
         msg.includes('invalid authentication credentials')
@@ -172,7 +191,17 @@ export function classifyError(error) {
         return { category: 'SAFETY_BLOCK', isPermanent: false, status: 200 };
     }
 
-    if (msg.includes('timeout') || msg.includes('ETIMEDOUT') || msg.includes('ESOCKETTIMEDOUT')) {
+    const lowerMsg = msg.toLowerCase();
+    if (
+        lowerMsg.includes('timeout') ||
+        lowerMsg.includes('timed out') ||
+        lowerMsg.includes('etimedout') ||
+        lowerMsg.includes('esockettimedout') ||
+        status === 408 ||
+        error?.name === 'TimeoutError' ||
+        error?.name === 'AbortError' ||
+        lowerMsg.includes('aborted')
+    ) {
         return { category: 'TIMEOUT', isPermanent: false, status: 408 };
     }
 
@@ -181,6 +210,22 @@ export function classifyError(error) {
     }
 
     return { category: 'UNKNOWN_ERROR', isPermanent: false, status: status || 500 };
+}
+
+export function withTimeout(promise, timeoutMs = 15000, timeoutMsg = "GEMINI_REQUEST_TIMEOUT") {
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+            const err = new Error(`${timeoutMsg}: Operation timed out after ${timeoutMs}ms`);
+            err.name = 'TimeoutError';
+            err.status = 408;
+            reject(err);
+        }, timeoutMs);
+    });
+    return Promise.race([
+        promise.finally(() => clearTimeout(timeoutId)),
+        timeoutPromise
+    ]);
 }
 
 export function logProviderAttempt({
@@ -208,7 +253,9 @@ export class AIEngine {
         this.openAIKey = config.openAIKey || null;
         this.geminiKeys = config.geminiKeys || [];
         this.OpenAIClientClass = config.OpenAIClientClass || OpenAI;
-        this.GoogleGenerativeAIClass = config.GoogleGenerativeAIClass || GoogleGenerativeAI;
+        this.GoogleGenAIClass = config.GoogleGenAIClass || config.GoogleGenerativeAIClass || GoogleGenAI;
+        // Keep alias for backwards compatibility
+        this.GoogleGenerativeAIClass = this.GoogleGenAIClass;
 
         this.fallbackModels = config.fallbackModels || CANONICAL_GEMINI_MODELS;
         this.openAIModel = config.openAIModel || CANONICAL_OPENAI_MODEL;
@@ -216,6 +263,7 @@ export class AIEngine {
         this.deadKeyTTLMs = config.deadKeyTTLMs || (5 * 60 * 1000); // 5 minutes
         this.deadKeyTimestamps = new Map();
         this.globalKeyIndex = 0;
+        this.requestTimeoutMs = config.requestTimeoutMs || 15000;
 
         // Credential format validation
         this.openAIValidation = validateOpenAICredentialFormat(this.openAIKey);
@@ -235,6 +283,7 @@ export class AIEngine {
         // Live verification tracking (tracks actual successful live responses)
         this.openAILiveVerified = false;
         this.geminiLiveVerified = false;
+        this.geminiLiveModel = null;
         this.openAILastLiveError = null;
         this.geminiLastLiveError = null;
     }
@@ -275,14 +324,15 @@ export class AIEngine {
         let geminiStatus = 'NOT_CONFIGURED';
         if (geminiConfigured) {
             if (!geminiFormatValid) {
-                const hasOAuth = this.uniqueGeminiKeys.some(k => k.startsWith('AQ.'));
-                geminiStatus = hasOAuth ? 'INVALID_FORMAT_OAUTH_TOKEN' : 'INVALID_CREDENTIAL_FORMAT';
-            } else if (activeKeys.length === 0) {
-                geminiStatus = 'ALL_KEYS_EXHAUSTED_COOLDOWN';
+                geminiStatus = 'INVALID_CREDENTIAL_FORMAT';
             } else if (this.geminiLastLiveError?.category === 'AUTH_ERROR') {
                 geminiStatus = 'AUTH_FAILED';
+            } else if (activeKeys.length === 0) {
+                geminiStatus = 'ALL_KEYS_EXHAUSTED_COOLDOWN';
             } else if (this.geminiLiveVerified) {
                 geminiStatus = 'LIVE_VERIFIED';
+            } else if (this.geminiLastLiveError?.category === 'TIMEOUT') {
+                geminiStatus = 'TIMEOUT';
             } else {
                 geminiStatus = 'FORMAT_VALID_UNVERIFIED';
             }
@@ -316,6 +366,7 @@ export class AIEngine {
                 keysFormatValid: validFormatKeys.length,
                 keysActive: activeKeys.length,
                 liveVerified: this.geminiLiveVerified,
+                verifiedModel: this.geminiLiveVerified ? this.geminiLiveModel : null,
                 ready: geminiReady,
                 status: geminiStatus
             },
@@ -326,10 +377,31 @@ export class AIEngine {
     }
 
     /**
+     * Proactively verifies Gemini provider availability via a real minimal request.
+     * Updates live readiness upon success, or sets accurate error diagnostics upon failure.
+     */
+    async verifyGeminiLive() {
+        if (this.uniqueGeminiKeys.length === 0) {
+            return { success: false, category: 'NOT_CONFIGURED', message: 'No Gemini keys configured' };
+        }
+        try {
+            await this.cascadeGemini(["Hello"], { requestId: 'verify-live' });
+            return { success: true, category: 'OK', message: 'Live request succeeded' };
+        } catch (err) {
+            return {
+                success: false,
+                category: err.classification?.category || 'UNKNOWN_ERROR',
+                message: err.message
+            };
+        }
+    }
+
+    /**
      * Executes the Gemini Cascade across keys and fallback models.
      */
     async cascadeGemini(promptParts, options = {}) {
-        const { requestId = 'req', isSafetyRetry = false, streamCallback = null } = options;
+        const { requestId = 'req', isSafetyRetry = false, streamCallback = null, timeoutMs = null } = options;
+        const effectiveTimeoutMs = timeoutMs || this.requestTimeoutMs || 15000;
 
         if (this.uniqueGeminiKeys.length === 0) {
             throw new Error("NO_GEMINI_KEYS_CONFIGURED");
@@ -338,7 +410,7 @@ export class AIEngine {
         // Fast-fail if all configured keys fail format validation
         const validKeys = this.uniqueGeminiKeys.filter(k => validateGeminiCredentialFormat(k).valid);
         if (validKeys.length === 0) {
-            const err = new Error("GEMINI_CREDENTIAL_FORMAT_INVALID: Configured keys do not match Google AI Studio API key format (AIzaSy...)");
+            const err = new Error("GEMINI_CREDENTIAL_FORMAT_INVALID: Configured keys do not match Google AI Studio API key format (AIza... or AQ...)");
             err.classification = { category: 'AUTH_ERROR', isPermanent: true, status: 401 };
             this.geminiLastLiveError = err.classification;
             throw err;
@@ -367,73 +439,148 @@ export class AIEngine {
             for (const modelName of this.fallbackModels) {
                 const startTime = Date.now();
                 try {
-                    const genAI = new this.GoogleGenerativeAIClass(currentKey);
-                    const model = genAI.getGenerativeModel({
-                        model: modelName,
-                        safetySettings: [
-                            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
-                            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
-                            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_ONLY_HIGH" },
-                            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_ONLY_HIGH" }
-                        ]
-                    });
+                    const ai = new this.GoogleGenAIClass({ apiKey: currentKey });
+                    const safetyConfig = [
+                        { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
+                        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
+                        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_ONLY_HIGH" },
+                        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_ONLY_HIGH" }
+                    ];
 
                     const finalPrompt = isSafetyRetry
                         ? ["**CONTEXT: PROFESSIONAL TECHNICAL INTERVIEW SIMULATION. EDUCATIONAL PURPOSE ONLY.**", ...promptParts]
                         : promptParts;
 
-                    if (streamCallback) {
-                        const result = await model.generateContentStream(finalPrompt);
-                        let fullText = "";
-                        let isFirst = true;
-                        for await (const chunk of result.stream) {
-                            const chunkText = chunk.text();
-                            fullText += chunkText;
-                            streamCallback(chunkText, isFirst);
-                            isFirst = false;
-                        }
-                        const durationMs = Date.now() - startTime;
-                        logProviderAttempt({
-                            requestId, provider: 'gemini', model: modelName,
-                            keyIndex: currentKeyIndex + 1, totalKeys: this.uniqueGeminiKeys.length,
-                            status: 'SUCCESS_STREAM', durationMs
-                        });
+                    const executeGeneration = async () => {
+                        let responseText = "";
+                        let responseCandidates = [];
 
-                        this.geminiLiveVerified = true;
-                        this.geminiLastLiveError = null;
-                        if (!isSafetyRetry) this.globalKeyIndex = (currentKeyIndex + 1) % this.uniqueGeminiKeys.length;
-                        return { response: { text: () => fullText }, model: modelName };
-                    } else {
-                        const result = await model.generateContent(finalPrompt);
-                        const response = await result.response;
-                        const durationMs = Date.now() - startTime;
-
-                        if (response.candidates && response.candidates.length > 0 && response.candidates[0].finishReason === "SAFETY") {
-                            logProviderAttempt({
-                                requestId, provider: 'gemini', model: modelName,
-                                keyIndex: currentKeyIndex + 1, totalKeys: this.uniqueGeminiKeys.length,
-                                status: 'SAFETY_BLOCKED', durationMs,
-                                errorCategory: 'SAFETY_BLOCK'
-                            });
-                            if (!isSafetyRetry) {
-                                return await this.cascadeGemini(promptParts, { ...options, isSafetyRetry: true });
+                        // 1. Support official Google @google/genai SDK (ai.models.generateContent / generateContentStream)
+                        if (ai.models && typeof ai.models.generateContent === 'function') {
+                            if (streamCallback) {
+                                const responseStream = await ai.models.generateContentStream({
+                                    model: modelName,
+                                    contents: finalPrompt,
+                                    config: { safetySettings: safetyConfig }
+                                });
+                                let fullText = "";
+                                let isFirst = true;
+                                for await (const chunk of responseStream) {
+                                    if (options.signal?.aborted) {
+                                        const cancelErr = new Error("STREAM_CANCELLED: Request aborted by client");
+                                        cancelErr.name = "AbortError";
+                                        throw cancelErr;
+                                    }
+                                    const chunkText = typeof chunk.text === 'function' ? chunk.text() : (chunk.text || "");
+                                    fullText += chunkText;
+                                    const shouldContinue = streamCallback(chunkText, isFirst);
+                                    if (shouldContinue === false) {
+                                        break;
+                                    }
+                                    isFirst = false;
+                                }
+                                responseText = fullText;
+                            } else {
+                                const result = await ai.models.generateContent({
+                                    model: modelName,
+                                    contents: finalPrompt,
+                                    config: { safetySettings: safetyConfig }
+                                });
+                                responseCandidates = result.candidates || [];
+                                if (responseCandidates.length > 0 && responseCandidates[0].finishReason === "SAFETY") {
+                                    logProviderAttempt({
+                                        requestId, provider: 'gemini', model: modelName,
+                                        keyIndex: currentKeyIndex + 1, totalKeys: this.uniqueGeminiKeys.length,
+                                        status: 'SAFETY_BLOCKED', durationMs: Date.now() - startTime,
+                                        errorCategory: 'SAFETY_BLOCK'
+                                    });
+                                    const safetyErr = new Error("SAFETY_BLOCKED");
+                                    safetyErr.isSafety = true;
+                                    throw safetyErr;
+                                }
+                                responseText = typeof result.text === 'function' ? result.text() : (result.text || "");
                             }
-                            throw new Error("SAFETY_BLOCKED");
+                        } else if (typeof ai.getGenerativeModel === 'function') {
+                            // 2. Backwards-compatible legacy SDK or mock support
+                            const model = ai.getGenerativeModel({
+                                model: modelName,
+                                safetySettings: safetyConfig
+                            });
+                            if (streamCallback) {
+                                const result = await model.generateContentStream(finalPrompt);
+                                let fullText = "";
+                                let isFirst = true;
+                                for await (const chunk of result.stream) {
+                                    if (options.signal?.aborted) {
+                                        const cancelErr = new Error("STREAM_CANCELLED: Request aborted by client");
+                                        cancelErr.name = "AbortError";
+                                        throw cancelErr;
+                                    }
+                                    const chunkText = typeof chunk.text === 'function' ? chunk.text() : (chunk.text || "");
+                                    fullText += chunkText;
+                                    const shouldContinue = streamCallback(chunkText, isFirst);
+                                    if (shouldContinue === false) {
+                                        break;
+                                    }
+                                    isFirst = false;
+                                }
+                                responseText = fullText;
+                            } else {
+                                const result = await model.generateContent(finalPrompt);
+                                const response = await result.response;
+                                responseCandidates = response.candidates || [];
+                                if (responseCandidates.length > 0 && responseCandidates[0].finishReason === "SAFETY") {
+                                    logProviderAttempt({
+                                        requestId, provider: 'gemini', model: modelName,
+                                        keyIndex: currentKeyIndex + 1, totalKeys: this.uniqueGeminiKeys.length,
+                                        status: 'SAFETY_BLOCKED', durationMs: Date.now() - startTime,
+                                        errorCategory: 'SAFETY_BLOCK'
+                                    });
+                                    const safetyErr = new Error("SAFETY_BLOCKED");
+                                    safetyErr.isSafety = true;
+                                    throw safetyErr;
+                                }
+                                responseText = typeof response.text === 'function' ? response.text() : (response.text || "");
+                            }
+                        } else {
+                            throw new Error("UNSUPPORTED_GEMINI_CLIENT: Client does not expose models.generateContent or getGenerativeModel");
                         }
 
-                        logProviderAttempt({
-                            requestId, provider: 'gemini', model: modelName,
-                            keyIndex: currentKeyIndex + 1, totalKeys: this.uniqueGeminiKeys.length,
-                            status: 'SUCCESS', durationMs
-                        });
+                        return { responseText, responseCandidates };
+                    };
 
-                        this.geminiLiveVerified = true;
-                        this.geminiLastLiveError = null;
-                        if (!isSafetyRetry) this.globalKeyIndex = (currentKeyIndex + 1) % this.uniqueGeminiKeys.length;
-                        return { response, model: modelName };
-                    }
+                    const { responseText, responseCandidates } = await withTimeout(
+                        executeGeneration(),
+                        effectiveTimeoutMs,
+                        `GEMINI_TIMEOUT [${modelName}]`
+                    );
+
+                    const durationMs = Date.now() - startTime;
+                    logProviderAttempt({
+                        requestId, provider: 'gemini', model: modelName,
+                        keyIndex: currentKeyIndex + 1, totalKeys: this.uniqueGeminiKeys.length,
+                        status: streamCallback ? 'SUCCESS_STREAM' : 'SUCCESS', durationMs
+                    });
+
+                    this.geminiLiveVerified = true;
+                    this.geminiLiveModel = modelName;
+                    this.geminiLastLiveError = null;
+                    failedAllModelsForKey = false;
+                    if (!isSafetyRetry) this.globalKeyIndex = (currentKeyIndex + 1) % this.uniqueGeminiKeys.length;
+
+                    return {
+                        response: {
+                            text: () => responseText,
+                            candidates: responseCandidates
+                        },
+                        model: modelName
+                    };
 
                 } catch (error) {
+                    if (error.isSafety && !isSafetyRetry) {
+                        return await this.cascadeGemini(promptParts, { ...options, isSafetyRetry: true });
+                    }
+
                     const durationMs = Date.now() - startTime;
                     lastError = error;
                     lastClassification = classifyError(error);
@@ -457,7 +604,11 @@ export class AIEngine {
                         break;
                     }
 
-                    if (lastClassification.category === 'QUOTA_EXHAUSTED' || lastClassification.category === 'SERVER_OVERLOAD') {
+                    if (
+                        lastClassification.category === 'QUOTA_EXHAUSTED' ||
+                        lastClassification.category === 'SERVER_OVERLOAD' ||
+                        lastClassification.category === 'TIMEOUT'
+                    ) {
                         continue;
                     }
 
@@ -483,11 +634,12 @@ export class AIEngine {
      * Unified 3-Tier Provider Flow:
      * Tier 1 (OpenAI) -> Tier 2 (Gemini Cascade) -> Tier 3 (FastEngine Offline)
      */
-    async generateAnswer(transcript = "", image = null, session = {}, requestId = 'req', streamCallback = null) {
+    async generateAnswer(transcript = "", image = null, session = {}, requestId = 'req', streamCallback = null, options = {}) {
+        const { signal = null, timeoutMs = null } = (typeof options === 'object' && options !== null) ? options : {};
         const diagnostics = {
-            tier1_openai: { attempted: false, success: false, error: null },
+            tier1_openai: { attempted: false, success: false, error: null, model: this.openAIModel },
             tier2_gemini: { attempted: false, success: false, error: null, model: null },
-            tier3_offline: { attempted: false, success: false }
+            tier3_offline: { attempted: false, success: false, model: 'knowledge_engine' }
         };
 
         // --- TIER 1: OpenAI ---
@@ -515,7 +667,7 @@ export class AIEngine {
                 diagnostics.tier1_openai.success = true;
                 this.openAILiveVerified = true;
                 this.openAILastLiveError = null;
-                return { text, provider: 'openai', isOffline: false, diagnostics };
+                return { text, provider: 'openai', model: this.openAIModel, isOffline: false, diagnostics };
             } catch (err) {
                 const durationMs = Date.now() - startTime;
                 const classification = classifyError(err);
@@ -553,9 +705,9 @@ export class AIEngine {
                     promptParts.push(`\nQUESTION: Analyze the visual code / diagram from screen.`);
                 }
 
-                const result = await this.cascadeGemini(promptParts, { requestId, streamCallback });
+                const result = await this.cascadeGemini(promptParts, { requestId, streamCallback, signal, timeoutMs });
                 const response = await result.response;
-                const text = response.text();
+                const text = typeof response.text === 'function' ? response.text() : (response.text || "");
 
                 diagnostics.tier2_gemini.success = true;
                 diagnostics.tier2_gemini.model = result.model;
@@ -581,6 +733,7 @@ export class AIEngine {
         return {
             text: offlineText,
             provider: 'offline',
+            model: 'knowledge_engine',
             isOffline: true,
             diagnostics
         };

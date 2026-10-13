@@ -8,12 +8,17 @@ import multer from 'multer';
 import mammoth from 'mammoth';
 import { createRequire } from "module";
 import crypto from 'crypto';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { AIEngine, FastEngine, classifyError, getOpaqueKeyLabel, validateGeminiCredentialFormat, validateOpenAICredentialFormat, logProviderAttempt } from './ai_engine.js';
 
 const require = createRequire(import.meta.url);
 const pdf = require("pdf-parse");
 
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 // =============================================================================
 // CONFIGURATION & VALIDATION
@@ -44,13 +49,11 @@ function validateConfig() {
     const geminiValidation = validateGeminiCredentialFormat(geminiKey);
 
     let validNumberedKeys = 0;
-    let unsupportedNumberedKeys = 0;
     for (let i = 1; i <= 20; i++) {
         const k = process.env[`GEMINI_API_KEY_${i}`];
         if (k) {
             const v = validateGeminiCredentialFormat(k);
             if (v.valid) validNumberedKeys++;
-            else if (v.status === 'INVALID_FORMAT_OAUTH_TOKEN') unsupportedNumberedKeys++;
         }
     }
 
@@ -58,24 +61,17 @@ function validateConfig() {
     console.log('│     Interview Copilot AI — Boot Check        │');
     console.log('├──────────────────────────────────────────────┤');
     console.log(`│ OpenAI Format:          ${openaiValidation.valid ? '✅ Valid (unverified)' : '⬚  Not configured'}     │`);
-    console.log(`│ Gemini Format:          ${geminiValidation.valid ? '✅ Valid (unverified)' : (geminiValidation.status === 'INVALID_FORMAT_OAUTH_TOKEN' ? '⚠️  AQ. (OAuth token)' : '⬚  Not configured')}   │`);
+    console.log(`│ Gemini Format:          ${geminiValidation.valid ? `✅ Valid (${geminiValidation.keyType === 'AUTHORIZATION_KEY' ? 'AQ. auth key' : 'AIza standard key'})` : '⬚  Not configured'}   │`);
     console.log(`│ Gemini Extra Keys:      ${validNumberedKeys > 0 ? `✅ ${validNumberedKeys} valid key(s)` : '⬚  None'}            │`);
     console.log(`│ CORS Allowed Origins:   ${ALL_ORIGINS.length} domain(s)            │`);
     console.log('└──────────────────────────────────────────────┘');
-
-    if (geminiValidation.status === 'INVALID_FORMAT_OAUTH_TOKEN' || unsupportedNumberedKeys > 0) {
-        console.warn('⚠️  CREDENTIAL FORMAT WARNING:');
-        console.warn('   Configured Gemini keys start with "AQ." (OAuth/Vertex tokens).');
-        console.warn('   The @google/generative-ai SDK requires Google AI Studio API keys (starts with "AIzaSy...").');
-        console.warn('   Get a free Google AI Studio API key at: https://aistudio.google.com/app/apikey');
-    }
 
     if (!openaiValidation.valid && !geminiValidation.valid && validNumberedKeys === 0) {
         console.warn('ℹ️  INFO: No valid AI provider keys configured. Operating in Offline Knowledge Engine mode.');
         console.warn('   Copy server/.env.example to server/.env and provide valid keys for live AI generation.');
     }
 
-    return { openaiValidation, geminiValidation, validNumberedKeys, unsupportedNumberedKeys };
+    return { openaiValidation, geminiValidation, validNumberedKeys };
 }
 
 const config = validateConfig();
@@ -356,6 +352,12 @@ app.get('/health/ready', (req, res) => {
             status: 'LIVE_READY',
             message: 'Live AI provider is verified and ready'
         });
+    } else if (health.gemini.status === 'AUTH_FAILED' || health.openai.status === 'AUTH_FAILED') {
+        res.status(503).json({
+            ready: false,
+            status: 'AUTH_FAILED',
+            message: 'AI provider authentication failed during live request'
+        });
     } else if (health.gemini.formatValid || health.openai.formatValid) {
         res.status(503).json({
             ready: false,
@@ -454,6 +456,10 @@ io.on('connection', (socket) => {
             return;
         }
 
+        const abortController = new AbortController();
+        const onDisconnect = () => abortController.abort();
+        socket.once('disconnect', onDisconnect);
+
         try {
             let transcript = "";
             let image = null;
@@ -474,22 +480,31 @@ io.on('connection', (socket) => {
             const result = await aiEngine.generateAnswer(
                 transcript, image, session, requestId,
                 (chunkText, isFirst) => {
+                    if (!socket.connected || abortController.signal.aborted) {
+                        return false;
+                    }
                     socket.emit('answerChunk', { chunk: chunkText, isFirst });
-                }
+                },
+                { signal: abortController.signal }
             );
 
-            if (result.isOffline) {
-                socket.emit('answer', `📴 **Offline Mode**\nNo AI provider is currently available. Using built-in knowledge base.\n\n${result.text}`);
-            } else {
-                socket.emit('answer', result.text);
+            if (!abortController.signal.aborted) {
+                if (result.isOffline) {
+                    socket.emit('answer', `📴 **Offline Mode**\nNo AI provider is currently available. Using built-in knowledge base.\n\n${result.text}`);
+                } else {
+                    socket.emit('answer', result.text);
+                }
             }
 
         } catch (error) {
-            console.error(`[${requestId}] ❌ AI Error:`, error.message);
-            const transcript_fallback = typeof data === 'string' ? data : data?.transcript || '';
-            const offlineAnswer = FastEngine.generateAnswer(transcript_fallback);
-            socket.emit('answer', `📴 **Offline Mode**\nAI providers temporarily unavailable. Using built-in knowledge base.\n\n${offlineAnswer}`);
+            if (!abortController.signal.aborted) {
+                console.error(`[${requestId}] ❌ AI Error:`, error.message);
+                const transcript_fallback = typeof data === 'string' ? data : data?.transcript || '';
+                const offlineAnswer = FastEngine.generateAnswer(transcript_fallback);
+                socket.emit('answer', `📴 **Offline Mode**\nAI providers temporarily unavailable. Using built-in knowledge base.\n\n${offlineAnswer}`);
+            }
         } finally {
+            socket.off('disconnect', onDisconnect);
             releaseRateLimit(socket.id, 'question');
         }
     });
@@ -896,4 +911,18 @@ httpServer.listen(PORT, () => {
     console.log(`\n🚀 Server listening on http://localhost:${PORT}`);
     console.log(`   Health: http://localhost:${PORT}/health`);
     console.log(`   CORS: ${ALL_ORIGINS.join(', ')}\n`);
+
+    if (UNIQUE_KEYS.length > 0) {
+        aiEngine.verifyGeminiLive()
+            .then(res => {
+                if (res.success) {
+                    console.log(`✅ [Startup] Gemini live verification succeeded: Ready for live AI responses.`);
+                } else {
+                    console.warn(`⚠️ [Startup] Gemini live verification unconfirmed: ${res.category} (${res.message})`);
+                }
+            })
+            .catch(err => {
+                console.warn(`⚠️ [Startup] Gemini live verification error: ${err.message}`);
+            });
+    }
 });

@@ -2,6 +2,7 @@ import io from 'socket.io-client';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
 import fetch from 'node-fetch';
 import FormData from 'form-data';
 
@@ -27,8 +28,56 @@ const results = {
     atsAnalysisFlow: 'PENDING'
 };
 
+let spawnedServer = null;
+
 function cleanupArtifacts() {
-    // Keep tracked dummy_resume.txt intact
+    if (spawnedServer) {
+        try { spawnedServer.kill(); } catch {}
+        spawnedServer = null;
+    }
+}
+
+async function ensureServerRunning() {
+    try {
+        const res = await fetch(`${SERVER_URL}/health`);
+        if (res.ok) {
+            console.log("ℹ️ Existing server detected and responding.");
+            return null;
+        }
+    } catch {
+        // Not running
+    }
+
+    console.log(`ℹ️ No server detected at ${SERVER_URL}. Spawning test server process...`);
+    const serverDir = path.resolve(__dirname, '../server');
+    const serverPath = path.resolve(serverDir, 'server.js');
+    const child = spawn('node', [serverPath], {
+        cwd: serverDir,
+        env: { ...process.env, PORT: '3000' },
+        stdio: 'pipe'
+    });
+
+    let ready = false;
+    for (let i = 0; i < 35; i++) {
+        await new Promise(r => setTimeout(r, 400));
+        try {
+            const res = await fetch(`${SERVER_URL}/health`);
+            if (res.ok) {
+                ready = true;
+                break;
+            }
+        } catch {
+            // retry
+        }
+    }
+
+    if (!ready) {
+        child.kill();
+        throw new Error(`Failed to start test server on ${SERVER_URL}`);
+    }
+
+    console.log("✅ Test server process started and ready.\n");
+    return child;
 }
 
 function printSummaryAndExit(forcedExitCode = null) {
@@ -48,8 +97,8 @@ function printSummaryAndExit(forcedExitCode = null) {
         console.warn(`⛔ RELEASE GATE BLOCKED (Exit Code 2):`);
         console.warn(`   Infrastructure, Socket.IO, upload, speech analytics, and offline safety nets passed.`);
         console.warn(`   However, LIVE AI generation is BLOCKED because no valid live API credentials are active.`);
-        console.warn(`   Google AI Studio API keys must start with "AIzaSy..." (OAuth AQ. tokens are rejected by Google AI Studio).`);
-        console.warn(`   Configure a valid Google AI Studio key (AIzaSy...) or OpenAI key (sk-...) to unblock live AI.\n`);
+        console.warn(`   Google AI Studio API credentials must start with "AIza..." (standard key) or "AQ." (authorization key).`);
+        console.warn(`   Configure a valid Google AI Studio key (AIza... / AQ...) or OpenAI key (sk-...) to unblock live AI.\n`);
         process.exit(2);
     } else {
         console.log(`🎉 100% VERIFIED (Exit Code 0): All system checks and LIVE AI generation passed!\n`);
@@ -64,6 +113,8 @@ const timeoutTimer = setTimeout(() => {
 }, 45000);
 
 async function runTests() {
+    spawnedServer = await ensureServerRunning();
+
     // 1. Health Endpoint Test
     try {
         console.log("🔍 Checking /health endpoint...");
