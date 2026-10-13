@@ -25,8 +25,8 @@ import StealthOverlay from './components/StealthOverlay';
 import ResumeUploader from './components/ResumeUploader';
 import ScreenWatcher from './components/ScreenWatcher';
 
-// Connect to backend (Dynamic IP for Mobile/Network Access)
-const SOCKET_URL = import.meta.env.DEV ? "http://localhost:3000" : "https://interview-copilot-aii.onrender.com";
+// Connect to backend (Configurable via VITE_SOCKET_URL, falls back to dev/prod defaults)
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || (import.meta.env.DEV ? "http://localhost:3000" : "https://interview-copilot-aii.onrender.com");
 const API_BASE_URL = SOCKET_URL; // Use same URL for API calls
 const socket = io(SOCKET_URL);
 
@@ -40,31 +40,45 @@ function App() {
     // Core Data
     const [suggestions, setSuggestions] = useState("");
     const [lastTranscript, setLastTranscript] = useState("");
-    const [isConnected, setIsConnected] = useState(socket.connected);
+    const [connectionStatus, setConnectionStatus] = useState(socket.connected ? 'connected' : 'connecting');
+    const [providerInfo, setProviderInfo] = useState({ hasOpenAI: false, hasGemini: false, isOnline: false });
+    const [isLoadingAnswer, setIsLoadingAnswer] = useState(false);
     const [resumeLoaded, setResumeLoaded] = useState(false);
     const [currentScreenFrame, setCurrentScreenFrame] = useState(null);
 
     useEffect(() => {
-        // ... (existing effects keep as is via unchanged lines, but this tool replaces blocks. I should be careful)
         console.log("App mounted. Socket status:", socket.connected);
-        if (socket.connected) setIsConnected(true);
+        if (socket.connected) setConnectionStatus('connected');
 
         const onConnect = () => {
             console.log("Socket Connected!");
-            setIsConnected(true);
+            setConnectionStatus('connected');
+            socket.emit('requestSessionState');
         };
 
         const onDisconnect = () => {
             console.log("Socket Disconnected!");
-            setIsConnected(false);
+            setConnectionStatus('disconnected');
+        };
+
+        const onConnectError = (err) => {
+            console.warn("Socket Connection Error:", err.message);
+            setConnectionStatus('error');
+        };
+
+        const onProviderStatus = (status) => {
+            console.log("AI Provider Status:", status);
+            setProviderInfo(status || { hasOpenAI: false, hasGemini: false, isOnline: false });
         };
 
         const onAnswer = (text) => {
             console.log("Received Answer:", text);
             setSuggestions(text);
+            setIsLoadingAnswer(false);
         };
 
         const onAnswerChunk = (data) => {
+            setIsLoadingAnswer(false);
             if (data.isFirst) {
                 setSuggestions(data.chunk);
             } else {
@@ -76,6 +90,8 @@ function App() {
 
         socket.on('connect', onConnect);
         socket.on('disconnect', onDisconnect);
+        socket.on('connect_error', onConnectError);
+        socket.on('providerStatus', onProviderStatus);
         socket.on('answer', onAnswer);
         socket.on('answerChunk', onAnswerChunk);
         socket.on('resumeConfirmed', onResumeConfirmed);
@@ -83,6 +99,8 @@ function App() {
         return () => {
             socket.off('connect', onConnect);
             socket.off('disconnect', onDisconnect);
+            socket.off('connect_error', onConnectError);
+            socket.off('providerStatus', onProviderStatus);
             socket.off('answer', onAnswer);
             socket.off('answerChunk', onAnswerChunk);
             socket.off('resumeConfirmed', onResumeConfirmed);
@@ -96,11 +114,30 @@ function App() {
             <div className="w-full md:w-1/3 p-4 md:p-6 border-b md:border-b-0 md:border-r border-slate-800 flex flex-col gap-4 max-h-[50vh] md:max-h-none overflow-y-auto shrink-0">
                 <div className="flex flex-col">
                     <h2 className="text-xl md:text-2xl font-bold text-white mb-2">Live Copilot</h2>
-                    <div className="flex items-center gap-2 mb-4">
-                        <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-500'}`}></div>
-                        <span className="text-xs text-slate-500 font-mono">
-                            {isConnected ? "⚡ FAST ENGINE CONNECTED" : "OFFLINE"}
-                        </span>
+                    <div className="flex flex-col gap-1.5 mb-4">
+                        <div className="flex items-center gap-2">
+                            <div className={`w-2.5 h-2.5 rounded-full ${
+                                connectionStatus === 'connected' ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]' :
+                                connectionStatus === 'connecting' ? 'bg-amber-400 animate-pulse' :
+                                'bg-rose-500'
+                            }`}></div>
+                            <span className="text-xs text-slate-400 font-mono font-medium">
+                                {connectionStatus === 'connected' ? 'Backend Connected' :
+                                 connectionStatus === 'connecting' ? 'Connecting to Backend...' :
+                                 'Backend Offline'}
+                            </span>
+                        </div>
+                        <div className="flex items-center gap-2 pl-4">
+                            <span className={`text-[11px] px-2 py-0.5 rounded font-mono ${
+                                providerInfo.isOnline
+                                    ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                                    : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
+                            }`}>
+                                {providerInfo.isOnline
+                                    ? `🤖 AI Provider: ${providerInfo.hasOpenAI ? 'OpenAI' : 'Gemini Active'}`
+                                    : '📴 Knowledge Base (Offline Mode)'}
+                            </span>
+                        </div>
                     </div>
                 </div>
 
@@ -165,7 +202,7 @@ function App() {
 
             {/* Right Suggestion Panel */}
             <div className="flex-1 p-4 md:p-6 bg-slate-900/30 overflow-y-auto">
-                <SuggestionPanel suggestions={suggestions} />
+                <SuggestionPanel suggestions={suggestions} loading={isLoadingAnswer} />
             </div>
         </div>
     );

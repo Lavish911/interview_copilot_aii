@@ -76,14 +76,18 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
                 return;
             }
 
-            // LOGIC 2: Turbo Silence Trigger (>400ms)
-            // If we have interim text but no final result for 400ms, assume speech ended.
+            // LOGIC 2: Silence Trigger
+            // If we have interim text but no final result for 1500ms, assume speech ended.
             if (interimTranscript.trim().length > 0) {
                 if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
                 silenceTimerRef.current = setTimeout(() => {
                     console.log("⚡ Silence detected. Force sending...");
                     handleSend(interimTranscript);
-                }, 250);
+                    // Force restart engine to clear state and record from scratch
+                    if (recognitionRef.current) {
+                        try { recognitionRef.current.abort(); } catch(e){}
+                    }
+                }, 1500);
             }
         };
 
@@ -138,7 +142,7 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
         // Auto-correct common technical jargon that STT mishears
         const corrections = {
             // Frontend
-            "reacts": "React", "re act": "React", "type script": "TypeScript", 
+            "reacts": "React", "re act": "React", "type script": "TypeScript",
             "java script": "JavaScript", "view js": "Vue.js", "next js": "Next.js",
             "cs s": "CSS", "ht ml": "HTML", "tail wind": "Tailwind", "re ducks": "Redux",
             // Backend
@@ -176,8 +180,9 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
         socket.emit('question', payload);
         socket.emit('analyzeSpeech', text);
 
-        // IMPORTANT: We do NOT stop the engine here. 
-        // We let 'continuous' keep running or let 'onend' restart it.
+        // IMPORTANT: We do NOT stop listening here.
+        // The engine will naturally fire 'onend' after this sentence,
+        // which will automatically restart it from scratch for the next sentence!
     };
 
     const toggleListening = () => {

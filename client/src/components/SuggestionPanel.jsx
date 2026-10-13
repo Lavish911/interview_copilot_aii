@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { Maximize2, Minimize2, ExternalLink } from 'lucide-react';
 
-const SuggestionPanel = ({ suggestions }) => {
+const SuggestionPanel = ({ suggestions, loading = false }) => {
     const [pipWindow, setPipWindow] = useState(null);
 
     const toggleOverlay = async () => {
