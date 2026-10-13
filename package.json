@@ -1,4 +1,14 @@
 {
+  "name": "interview-copilot-aii",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/ai_engine.test.js",
+    "test:unit": "node tests/ai_engine.test.js",
+    "test:isolation": "node tests/isolation_two_client.js",
+    "test:system": "node tests/system_verify.js",
+    "test:all": "npm run test:unit && npm run test:isolation"
+  },
   "dependencies": {
     "form-data": "^4.0.5",
     "node-fetch": "^3.3.2",
