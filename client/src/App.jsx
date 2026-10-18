@@ -164,16 +164,16 @@ function App() {
                                     width: 450,
                                     height: 600,
                                 });
-                                
+
                                 // Copy styles
                                 [...document.head.querySelectorAll('style, link[rel="stylesheet"]')].forEach(el => {
                                     pip.document.head.appendChild(el.cloneNode(true));
                                 });
-                                
+
                                 pip.document.body.style.margin = "0";
                                 pip.document.body.style.height = "100vh";
                                 pip.document.body.style.backgroundColor = "#0f1117";
-                                
+
                                 const rootDiv = pip.document.createElement('div');
                                 rootDiv.id = 'pip-root';
                                 rootDiv.style.height = "100%";
@@ -210,8 +210,8 @@ function App() {
     return (
         <div className="flex h-screen bg-[#0f1117] text-slate-300 font-sans overflow-hidden">
             {/* Stealth Overlay */}
-            {isStealth && <StealthOverlay 
-                suggestions={suggestions} 
+            {isStealth && <StealthOverlay
+                suggestions={suggestions}
                 pipWindow={pipWindow}
                 lastTranscript={lastTranscript}
                 onClear={() => {
@@ -221,7 +221,7 @@ function App() {
                 onClose={() => {
                     setIsStealth(false);
                     if (pipWindow) pipWindow.close();
-                }} 
+                }}
             />}
 
             {/* Modals */}

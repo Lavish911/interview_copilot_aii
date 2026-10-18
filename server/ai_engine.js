@@ -212,13 +212,20 @@ export function classifyError(error) {
     return { category: 'UNKNOWN_ERROR', isPermanent: false, status: status || 500 };
 }
 
-export function withTimeout(promise, timeoutMs = 15000, timeoutMsg = "GEMINI_REQUEST_TIMEOUT") {
+export function withTimeout(promise, timeoutMs = 15000, timeoutMsg = "GEMINI_REQUEST_TIMEOUT", abortController = null) {
     let timeoutId;
     const timeoutPromise = new Promise((_, reject) => {
         timeoutId = setTimeout(() => {
             const err = new Error(`${timeoutMsg}: Operation timed out after ${timeoutMs}ms`);
             err.name = 'TimeoutError';
             err.status = 408;
+            if (abortController) {
+                try {
+                    abortController.abort(err);
+                } catch {
+                    // Ignore abort error
+                }
+            }
             reject(err);
         }, timeoutMs);
     });
@@ -286,6 +293,7 @@ export class AIEngine {
         this.geminiLiveModel = null;
         this.openAILastLiveError = null;
         this.geminiLastLiveError = null;
+        this.activeProbePromise = null;
     }
 
     isKeyDead(key) {
@@ -384,16 +392,24 @@ export class AIEngine {
         if (this.uniqueGeminiKeys.length === 0) {
             return { success: false, category: 'NOT_CONFIGURED', message: 'No Gemini keys configured' };
         }
-        try {
-            await this.cascadeGemini(["Hello"], { requestId: 'verify-live' });
-            return { success: true, category: 'OK', message: 'Live request succeeded' };
-        } catch (err) {
-            return {
-                success: false,
-                category: err.classification?.category || 'UNKNOWN_ERROR',
-                message: err.message
-            };
+        if (this.activeProbePromise) {
+            return this.activeProbePromise;
         }
+        this.activeProbePromise = (async () => {
+            try {
+                await this.cascadeGemini(["Hello"], { requestId: 'verify-live' });
+                return { success: true, category: 'OK', message: 'Live request succeeded' };
+            } catch (err) {
+                return {
+                    success: false,
+                    category: err.classification?.category || 'UNKNOWN_ERROR',
+                    message: err.message
+                };
+            }
+        })().finally(() => {
+            this.activeProbePromise = null;
+        });
+        return this.activeProbePromise;
     }
 
     /**
@@ -451,6 +467,23 @@ export class AIEngine {
                         ? ["**CONTEXT: PROFESSIONAL TECHNICAL INTERVIEW SIMULATION. EDUCATIONAL PURPOSE ONLY.**", ...promptParts]
                         : promptParts;
 
+                    const attemptAbortController = new AbortController();
+                    let cleanupSignal = null;
+                    if (options.signal) {
+                        if (options.signal.aborted) {
+                            attemptAbortController.abort(options.signal.reason);
+                        } else {
+                            const onParentAbort = () => attemptAbortController.abort(options.signal?.reason || new Error("STREAM_CANCELLED: Request aborted by client"));
+                            options.signal.addEventListener('abort', onParentAbort, { once: true });
+                            cleanupSignal = () => options.signal.removeEventListener('abort', onParentAbort);
+                        }
+                    }
+
+                    const callConfig = {
+                        safetySettings: safetyConfig,
+                        abortSignal: attemptAbortController.signal
+                    };
+
                     const executeGeneration = async () => {
                         let responseText = "";
                         let responseCandidates = [];
@@ -461,12 +494,12 @@ export class AIEngine {
                                 const responseStream = await ai.models.generateContentStream({
                                     model: modelName,
                                     contents: finalPrompt,
-                                    config: { safetySettings: safetyConfig }
+                                    config: callConfig
                                 });
                                 let fullText = "";
                                 let isFirst = true;
                                 for await (const chunk of responseStream) {
-                                    if (options.signal?.aborted) {
+                                    if (options.signal?.aborted || attemptAbortController.signal.aborted) {
                                         const cancelErr = new Error("STREAM_CANCELLED: Request aborted by client");
                                         cancelErr.name = "AbortError";
                                         throw cancelErr;
@@ -475,6 +508,7 @@ export class AIEngine {
                                     fullText += chunkText;
                                     const shouldContinue = streamCallback(chunkText, isFirst);
                                     if (shouldContinue === false) {
+                                        attemptAbortController.abort();
                                         break;
                                     }
                                     isFirst = false;
@@ -484,7 +518,7 @@ export class AIEngine {
                                 const result = await ai.models.generateContent({
                                     model: modelName,
                                     contents: finalPrompt,
-                                    config: { safetySettings: safetyConfig }
+                                    config: callConfig
                                 });
                                 responseCandidates = result.candidates || [];
                                 if (responseCandidates.length > 0 && responseCandidates[0].finishReason === "SAFETY") {
@@ -511,7 +545,7 @@ export class AIEngine {
                                 let fullText = "";
                                 let isFirst = true;
                                 for await (const chunk of result.stream) {
-                                    if (options.signal?.aborted) {
+                                    if (options.signal?.aborted || attemptAbortController.signal.aborted) {
                                         const cancelErr = new Error("STREAM_CANCELLED: Request aborted by client");
                                         cancelErr.name = "AbortError";
                                         throw cancelErr;
@@ -520,6 +554,7 @@ export class AIEngine {
                                     fullText += chunkText;
                                     const shouldContinue = streamCallback(chunkText, isFirst);
                                     if (shouldContinue === false) {
+                                        attemptAbortController.abort();
                                         break;
                                     }
                                     isFirst = false;
@@ -549,11 +584,18 @@ export class AIEngine {
                         return { responseText, responseCandidates };
                     };
 
-                    const { responseText, responseCandidates } = await withTimeout(
-                        executeGeneration(),
-                        effectiveTimeoutMs,
-                        `GEMINI_TIMEOUT [${modelName}]`
-                    );
+                    let resultData;
+                    try {
+                        resultData = await withTimeout(
+                            executeGeneration(),
+                            effectiveTimeoutMs,
+                            `GEMINI_TIMEOUT [${modelName}]`,
+                            attemptAbortController
+                        );
+                    } finally {
+                        if (cleanupSignal) cleanupSignal();
+                    }
+                    const { responseText, responseCandidates } = resultData;
 
                     const durationMs = Date.now() - startTime;
                     logProviderAttempt({

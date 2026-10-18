@@ -9,7 +9,7 @@ import FormData from 'form-data';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const SERVER_URL = process.env.TEST_SERVER_URL || 'http://localhost:3000';
+const SERVER_URL = process.env.TEST_SERVER_URL || 'http://127.0.0.1:3000';
 
 console.log(`\n======================================================`);
 console.log(`🚀 Interview Copilot AI — System & Live Integration Test`);

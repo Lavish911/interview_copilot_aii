@@ -9,8 +9,8 @@ const StealthOverlay = ({ suggestions, onClose, pipWindow, lastTranscript, onCle
         <div
             style={{ opacity: pipWindow ? 1 : opacity }}
             className={
-                pipWindow 
-                ? "bg-[#0f1117] h-full w-full p-4 flex flex-col" 
+                pipWindow
+                ? "bg-[#0f1117] h-full w-full p-4 flex flex-col"
                 : "bg-black/95 backdrop-blur-xl pointer-events-auto rounded-xl p-4 w-[600px] border border-slate-700 shadow-2xl transition-all duration-300 hover:opacity-100"
             }
         >

@@ -424,6 +424,63 @@ async function runUnitTests() {
         "25. Startup Probe: verifyGeminiLive validates provider and sets LIVE_VERIFIED without credentials leak"
     );
 
+    // 26. Genuine Timeout Abort Propagation to SDK
+    let capturedSignalAbortedOnTimeout = false;
+    class MockAbortTrackingGenAI {
+        constructor() {
+            this.models = {
+                generateContent: async ({ config }) => {
+                    const signal = config?.abortSignal;
+                    if (signal) {
+                        signal.addEventListener('abort', () => {
+                            capturedSignalAbortedOnTimeout = true;
+                        });
+                    }
+                    await new Promise(r => setTimeout(r, 80));
+                    return { text: "Delayed" };
+                }
+            };
+        }
+    }
+    const abortTrackingEngine = new AIEngine({
+        geminiKeys: [SYNTHETIC_GEMINI_KEY_AUTH],
+        requestTimeoutMs: 25,
+        fallbackModels: ['gemini-2.5-flash'],
+        GoogleGenAIClass: MockAbortTrackingGenAI
+    });
+    await abortTrackingEngine.generateAnswer("Test abort signal");
+    assert(
+        capturedSignalAbortedOnTimeout === true,
+        "26. Genuine Timeout Cancellation: withTimeout aborts underlying SDK abortSignal upon timeout"
+    );
+
+    // 27. Concurrent Startup Probe Deduplication
+    let probeExecutions = 0;
+    class MockSlowProbeGenAI {
+        constructor() {
+            this.models = {
+                generateContent: async () => {
+                    probeExecutions++;
+                    await new Promise(r => setTimeout(r, 40));
+                    return { text: "Probe OK" };
+                }
+            };
+        }
+    }
+    const dedupeEngine = new AIEngine({
+        geminiKeys: [SYNTHETIC_GEMINI_KEY_AUTH],
+        GoogleGenAIClass: MockSlowProbeGenAI
+    });
+    const [p1, p2, p3] = await Promise.all([
+        dedupeEngine.verifyGeminiLive(),
+        dedupeEngine.verifyGeminiLive(),
+        dedupeEngine.verifyGeminiLive()
+    ]);
+    assert(
+        probeExecutions === 1 && p1.success && p2.success && p3.success,
+        "27. Startup Probe Deduplication: Concurrent calls share a single in-flight probe and do not duplicate live calls"
+    );
+
     console.log("\n==================================================");
     console.log(`Unit Test Summary: ${passedCount} passed, ${failedCount} failed.`);
     console.log("==================================================");

@@ -8,7 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const TEST_PORT = process.env.TEST_PORT || '3000';
-const SERVER_URL = process.env.TEST_SERVER_URL || `http://localhost:${TEST_PORT}`;
+const SERVER_URL = process.env.TEST_SERVER_URL || `http://127.0.0.1:${TEST_PORT}`;
 
 console.log(`======================================================`);
 console.log(`🧪 Running Permanent Session Isolation Regression Test`);
