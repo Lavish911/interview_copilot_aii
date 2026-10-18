@@ -13,7 +13,7 @@ import { fileURLToPath } from 'url';
 import { AIEngine, FastEngine, classifyError, getOpaqueKeyLabel, validateGeminiCredentialFormat, validateOpenAICredentialFormat, logProviderAttempt } from './ai_engine.js';
 
 const require = createRequire(import.meta.url);
-const pdf = require("pdf-parse");
+const { PDFParse } = require("pdf-parse");
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -377,6 +377,7 @@ app.get('/health/ready', (req, res) => {
 // SOCKET.IO CONNECTION HANDLER
 // =============================================================================
 
+
 io.on('connection', (socket) => {
     console.log(`🔗 Connected: ${socket.id}`);
     const session = getSession(socket.id);
@@ -547,9 +548,11 @@ io.on('connection', (socket) => {
     socket.on('analyzeSpeech', (transcript) => {
         if (typeof transcript !== 'string' || transcript.length > 5000) return;
 
-        const wordCount = transcript.split(' ').length;
+        const wordCount = transcript.trim() ? transcript.trim().split(/\s+/).length : 0;
+        // Filler Word Detection (word-boundary match to avoid false positives like "likely")
         const fillers = ['um', 'uh', 'like', 'you know', 'basically', 'actually', 'literally'];
-        const foundFillers = fillers.filter(w => transcript.toLowerCase().includes(w));
+        const lowerTranscript = transcript.toLowerCase();
+        const foundFillers = fillers.filter(w => new RegExp(`\\b${w}\\b`).test(lowerTranscript));
 
         let baseScore = 9;
         baseScore -= foundFillers.length * 0.5;
@@ -845,7 +848,9 @@ app.post('/api/upload-resume', (req, res, next) => {
 
         if (mimeType === 'application/pdf') {
             try {
-                const data = await pdf(req.file.buffer);
+                const parser = new PDFParse({ data: req.file.buffer });
+                const data = await parser.getText();
+                await parser.destroy();
                 text = data.text;
                 if (text.trim().length < 50) throw new Error("Scanned PDF detected");
             } catch (e) {

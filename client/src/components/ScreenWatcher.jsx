@@ -3,11 +3,17 @@ import { Layers, StopCircle, Monitor } from 'lucide-react';
 
 const ScreenWatcher = ({ onFrameUpdate }) => {
     const [isSharing, setIsSharing] = useState(false);
+    const [captureError, setCaptureError] = useState("");
     const videoRef = useRef(null);
     const canvasRef = useRef(null);
     const streamRef = useRef(null);
 
     const startCapture = async () => {
+        setCaptureError("");
+        if (!navigator.mediaDevices?.getDisplayMedia) {
+            setCaptureError("⚠️ Screen capture not supported on this device/browser.");
+            return;
+        }
         try {
             const stream = await navigator.mediaDevices.getDisplayMedia({
                 video: { cursor: "always" },
@@ -25,6 +31,9 @@ const ScreenWatcher = ({ onFrameUpdate }) => {
 
         } catch (err) {
             console.error("Error starting screen capture:", err);
+            setCaptureError(err.name === 'NotAllowedError'
+                ? "⚠️ Permission denied — allow screen sharing to use vision."
+                : "⚠️ Could not start screen capture.");
         }
     };
 
@@ -67,12 +76,12 @@ const ScreenWatcher = ({ onFrameUpdate }) => {
     }, [isSharing, onFrameUpdate]);
 
     return (
-        <div className="flex flex-col gap-2 p-4 bg-slate-900 rounded-xl border border-slate-800">
-            <div className="flex items-center justify-between mb-2">
-                <h3 className="text-sm font-bold text-slate-400 uppercase flex items-center gap-2">
-                    <Monitor size={16} /> Vision Input
+        <div className="card p-5">
+            <div className="flex items-center justify-between mb-3">
+                <h3 className="text-[11px] font-bold tracking-widest uppercase text-slate-500 flex items-center gap-2">
+                    <span className="w-7 h-7 rounded-lg bg-sky-500/10 flex items-center justify-center text-sky-400"><Monitor size={14} /></span> Screen vision
                 </h3>
-                {isSharing && <span className="text-xs text-green-400 animate-pulse">● Live</span>}
+                {isSharing && <span className="text-[11px] font-bold px-2 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">● Live</span>}
             </div>
 
             <video ref={videoRef} autoPlay playsInline muted className="hidden" />
@@ -81,23 +90,28 @@ const ScreenWatcher = ({ onFrameUpdate }) => {
             {!isSharing ? (
                 <button
                     onClick={startCapture}
-                    className="flex items-center justify-center gap-2 w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
+                    className="w-full py-2.5 rounded-lg bg-[#0A0A0A] dark:bg-white text-white dark:text-black text-[13px] font-medium"
                 >
-                    <Layers size={16} /> Share Screen Context
+                    Share screen
                 </button>
             ) : (
                 <button
                     onClick={stopCapture}
-                    className="flex items-center justify-center gap-2 w-full py-2 bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-600/50 rounded-lg text-sm font-medium transition-colors"
+                    className="w-full py-2.5 rounded-lg border text-[13px] font-medium"
+                    style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text)' }}
                 >
-                    <StopCircle size={16} /> Stop Vision
+                    Stop sharing
                 </button>
             )}
 
-            <p className="text-xs text-slate-500 mt-1">
+            {captureError && (
+                <p className="mt-3 text-xs font-semibold text-red-300 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2">{captureError}</p>
+            )}
+
+            <p className="text-xs text-slate-500 mt-3 leading-relaxed">
                 {isSharing
-                    ? "AI is watching your screen for technical questions."
-                    : "Share your Interview/IDE window to give the AI visual context."}
+                    ? "AI sees your screen and combines it with your voice."
+                    : "Share your interview or code window so the AI understands the question."}
             </p>
         </div>
     );
