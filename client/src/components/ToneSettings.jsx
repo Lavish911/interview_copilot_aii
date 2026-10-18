@@ -19,37 +19,63 @@ const ToneSettings = ({ socket, onClose }) => {
 
     return (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 backdrop-blur-sm p-4">
-            <div className="w-full max-w-md rounded-[20px] border border-slate-800 bg-slate-900 shadow-2xl overflow-hidden animate-fade-up">
-                <div className="mesh-hero p-6 pb-5 border-b border-slate-800">
+            <div className="w-full max-w-md rounded-[20px] border shadow-2xl overflow-hidden animate-fade-up" style={{ background: 'var(--surface)', borderColor: 'var(--border)', color: 'var(--text)' }}>
+                <div className="p-6 pb-5 border-b" style={{ borderColor: 'var(--border)' }}>
                     <div className="flex items-center justify-between">
-                        <h2 className="text-lg font-black text-white flex items-center gap-2">⚙️ Make it yours</h2>
-                        <button onClick={onClose} className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/15 text-white flex items-center justify-center">✕</button>
+                        <h2 className="text-lg font-semibold flex items-center gap-2">⚙️ Make it yours</h2>
+                        <button onClick={onClose} className="w-8 h-8 rounded-full border flex items-center justify-center" style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}>✕</button>
                     </div>
-                    <p className="text-sm text-slate-400 mt-1">The AI tailors every answer to this. Keep it simple.</p>
+                    <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>The AI tailors every answer to this. Keep it simple.</p>
                 </div>
 
                 <div className="p-6 space-y-4">
                     <label className="block">
-                        <span className="text-[11px] font-bold tracking-widest uppercase text-slate-500">Target role</span>
-                        <input value={role} onChange={(e)=>setRole(e.target.value)} placeholder="e.g. Frontend Engineer" className="mt-1.5 w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-3 text-sm text-white placeholder:text-slate-500 focus:border-violet-500" />
+                        <span className="text-[11px] font-semibold tracking-widest uppercase" style={{ color: 'var(--text-faint)' }}>Target role</span>
+                        <input
+                            value={role}
+                            onChange={(e) => setRole(e.target.value)}
+                            placeholder="e.g. Frontend Engineer"
+                            className="mt-1.5 w-full rounded-xl border px-3.5 py-3 text-sm"
+                            style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text)' }}
+                        />
                     </label>
 
                     <label className="block">
-                        <span className="text-[11px] font-bold tracking-widest uppercase text-slate-500">Company</span>
-                        <input value={company} onChange={(e)=>setCompany(e.target.value)} placeholder="e.g. Google, Startup" className="mt-1.5 w-full rounded-xl bg-slate-950 border border-slate-800 px-3.5 py-3 text-sm text-white placeholder:text-slate-500 focus:border-violet-500" />
+                        <span className="text-[11px] font-semibold tracking-widest uppercase" style={{ color: 'var(--text-faint)' }}>Company</span>
+                        <input
+                            value={company}
+                            onChange={(e) => setCompany(e.target.value)}
+                            placeholder="e.g. Google, Startup"
+                            className="mt-1.5 w-full rounded-xl border px-3.5 py-3 text-sm"
+                            style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text)' }}
+                        />
                     </label>
 
                     <div className="grid grid-cols-2 gap-3">
                         <label className="block">
-                            <span className="text-[11px] font-bold tracking-widest uppercase text-slate-500">Tone</span>
-                            <select value={tone} onChange={(e)=>setTone(e.target.value)} className="mt-1.5 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-3 text-sm text-white">
-                                <option>Professional</option><option>Confident</option><option>Casual</option><option>Friendly</option>
+                            <span className="text-[11px] font-semibold tracking-widest uppercase" style={{ color: 'var(--text-faint)' }}>Tone</span>
+                            <select
+                                value={tone}
+                                onChange={(e) => setTone(e.target.value)}
+                                className="mt-1.5 w-full rounded-xl border px-3 py-3 text-sm"
+                                style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text)' }}
+                            >
+                                <option>Professional</option>
+                                <option>Confident</option>
+                                <option>Casual</option>
+                                <option>Friendly</option>
                             </select>
                         </label>
                         <label className="block">
-                            <span className="text-[11px] font-bold tracking-widest uppercase text-slate-500">Detail</span>
-                            <select value={detailLevel} onChange={(e)=>setDetailLevel(e.target.value)} className="mt-1.5 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-3 text-sm text-white">
-                                <option>Concise</option><option>Detailed</option>
+                            <span className="text-[11px] font-semibold tracking-widest uppercase" style={{ color: 'var(--text-faint)' }}>Detail</span>
+                            <select
+                                value={detailLevel}
+                                onChange={(e) => setDetailLevel(e.target.value)}
+                                className="mt-1.5 w-full rounded-xl border px-3 py-3 text-sm"
+                                style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text)' }}
+                            >
+                                <option>Concise</option>
+                                <option>Detailed</option>
                             </select>
                         </label>
                     </div>

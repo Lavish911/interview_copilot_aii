@@ -25,43 +25,52 @@ const StealthOverlay = ({ suggestions, onClose, pipWindow, lastTranscript, onCle
     useEffect(() => {
         if (!dragging) return;
         const onMove = (e) => {
-            setPos({ x: dragRef.current.origX + (e.clientX - dragRef.current.startX), y: dragRef.current.origY + (e.clientY - dragRef.current.startY) });
+            setPos({
+                x: dragRef.current.origX + (e.clientX - dragRef.current.startX),
+                y: dragRef.current.origY + (e.clientY - dragRef.current.startY)
+            });
         };
         const onUp = () => setDragging(false);
         window.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
-        return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+        return () => {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+        };
     }, [dragging]);
 
     const content = (
         <div
-            style={{
-                opacity: pipWindow ? 1 : opacity,
-                transform: pipWindow ? undefined : `translate(${pos.x}px, ${pos.y}px)`,
-            }}
+            style={{ opacity: pipWindow ? 1 : opacity }}
             className={
                 pipWindow
-                ? "bg-[#0A0A0A] h-full w-full p-3 flex flex-col text-[13px] leading-relaxed"
-                : "bg-[#0A0A0A] text-white rounded-xl border border-[#242424] shadow-2xl w-[360px] max-h-[520px] flex flex-col overflow-hidden select-none"
+                    ? "bg-[#0A0A0A] h-full w-full p-3 flex flex-col text-[13px] leading-relaxed"
+                    : "bg-[#0A0A0A] text-white rounded-xl border border-[#242424] shadow-2xl w-[360px] max-h-[520px] flex flex-col overflow-hidden select-none"
             }
         >
             <div
                 onMouseDown={onMouseDown}
-                className={`flex items-center justify-between px-3 py-2 border-b shrink-0 ${pipWindow ? 'border-[#1A1A1A] cursor-default' : 'border-[#1A1A1A] cursor-move'}`}
-                style={{ background: pipWindow ? '#0A0A0A' : '#0A0A0A' }}
+                className={`flex items-center justify-between px-3 py-2 border-b shrink-0 border-[#1A1A1A] ${pipWindow ? 'cursor-default' : 'cursor-move'}`}
+                style={{ background: '#0A0A0A' }}
             >
                 <div className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                     <span className="text-[11px] font-medium tracking-wide" style={{ color: '#EDEDED' }}>
                         {pipWindow ? 'Hidden • Not on screen share' : 'Stealth • Visible on share'}
                     </span>
-                    <span className="hidden sm:inline text-[10px] px-1.5 py-0.5 rounded border" style={{ borderColor: '#242424', color: '#888', background: '#111' }}>
-                        {pipWindow ? 'PiP • Hidden' : 'Use floating for hidden'}
-                    </span>
                 </div>
                 <div className="flex items-center gap-1.5">
                     {!pipWindow && (
-                        <input type="range" min="0.3" max="1" step="0.05" value={opacity} onChange={(e) => setOpacity(parseFloat(e.target.value))} className="w-14 h-1 accent-white" title="Opacity" />
+                        <input
+                            type="range"
+                            min="0.3"
+                            max="1"
+                            step="0.05"
+                            value={opacity}
+                            onChange={(e) => setOpacity(parseFloat(e.target.value))}
+                            className="w-14 h-1 accent-white"
+                            title="Opacity"
+                        />
                     )}
                     <button onClick={onClear} className="text-[11px] px-2 py-1 rounded hover:bg-[#1A1A1A] transition-colors" style={{ color: '#888' }}>Clear</button>
                     <button onClick={onClose} className="w-6 h-6 rounded-full bg-white text-black flex items-center justify-center text-xs hover:opacity-90">✕</button>
@@ -105,14 +114,14 @@ const StealthOverlay = ({ suggestions, onClose, pipWindow, lastTranscript, onCle
                         <div className="w-8 h-8 rounded-full border flex items-center justify-center text-xs" style={{ borderColor: '#242424', color: '#666' }}>●</div>
                         <div className="text-xs mt-2" style={{ color: '#888' }}>Listening…</div>
                         <div className="text-[11px] mt-1" style={{ color: '#666' }}>Speak or share screen. Answer appears here.</div>
-                        <div className="text-[10px] mt-3 px-2 py-1 rounded border" style={{ borderColor: '#242424', color: '#666' }}>Ctrl+Enter to ask • Esc to hide</div>
+                        <div className="text-[10px] mt-3 px-2 py-1 rounded border" style={{ borderColor: '#242424', color: '#666' }}>Esc to exit</div>
                     </div>
                 )}
             </div>
 
             <div className="px-3 py-2 border-t flex items-center justify-between text-[11px] shrink-0" style={{ borderColor: '#1A1A1A', color: '#666' }}>
                 <span>Cluely-style • Hidden from Zoom/Meet/Teams</span>
-                <span className="hidden sm:inline">Drag header to move</span>
+                {!pipWindow && <span className="hidden sm:inline">Drag header to move</span>}
             </div>
         </div>
     );

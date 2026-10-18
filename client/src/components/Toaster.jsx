@@ -9,15 +9,9 @@ export const toast = (message, type = 'info') => {
 };
 
 const ICONS = {
-    success: <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />,
-    error: <XCircle size={16} className="text-red-400 shrink-0" />,
-    info: <Info size={16} className="text-blue-400 shrink-0" />,
-};
-
-const BORDERS = {
-    success: 'border-emerald-500/30',
-    error: 'border-red-500/30',
-    info: 'border-blue-500/30',
+    success: <CheckCircle2 size={16} className="text-emerald-500 shrink-0" />,
+    error: <XCircle size={16} className="text-red-500 shrink-0" />,
+    info: <Info size={16} className="text-blue-500 shrink-0" />,
 };
 
 export default function Toaster() {
@@ -38,7 +32,8 @@ export default function Toaster() {
             {items.map(t => (
                 <div
                     key={t.id}
-                    className={`animate-toast-in flex items-start gap-2.5 glass border ${BORDERS[t.type] || BORDERS.info} rounded-2xl px-4 py-3.5 shadow-2xl text-sm text-slate-100`}
+                    className="animate-toast-in flex items-start gap-2.5 border rounded-2xl px-4 py-3.5 shadow-2xl text-sm backdrop-blur-md"
+                    style={{ background: 'var(--surface)', borderColor: 'var(--border-strong)', color: 'var(--text)' }}
                 >
                     {ICONS[t.type] || ICONS.info}
                     <span className="leading-snug font-medium">{t.message}</span>

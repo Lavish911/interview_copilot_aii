@@ -14,8 +14,8 @@ const Dashboard = ({ onStartMock, onStartCopilot, onNavigate }) => {
             setAts(loadLocal(STORAGE_KEYS.atsScore, null));
         };
         refresh();
-        const id = setInterval(refresh, 2000);
-        return () => clearInterval(id);
+        window.addEventListener('storage', refresh);
+        return () => window.removeEventListener('storage', refresh);
     }, []);
 
     const count = history.length;

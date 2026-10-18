@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import io from 'socket.io-client';
 import {
     LayoutDashboard,
@@ -25,6 +25,7 @@ import ResumeUploader from './components/ResumeUploader';
 import ScreenWatcher from './components/ScreenWatcher';
 import Toaster from './components/Toaster';
 import { useTheme } from './hooks/useTheme';
+import { loadLocal, STORAGE_KEYS } from './lib/storage';
 
 // Connect to backend (Configurable via VITE_SOCKET_URL, falls back to dev/prod defaults)
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || (import.meta.env.DEV ? "http://localhost:3000" : "https://interview-copilot-aii.onrender.com");
@@ -55,18 +56,53 @@ function App() {
     const [currentScreenFrame, setCurrentScreenFrame] = useState(null);
     const [theme, setTheme] = useTheme();
 
+    const handleTranscriptSent = useCallback((text) => {
+        setLastTranscript(text);
+        setIsLoadingAnswer(true);
+    }, []);
+
+    const openStealthPip = useCallback(async () => {
+        if ('documentPictureInPicture' in window) {
+            try {
+                const pip = await window.documentPictureInPicture.requestWindow({ width: 360, height: 520 });
+                [...document.head.querySelectorAll('style, link[rel="stylesheet"]')].forEach(el =>
+                    pip.document.head.appendChild(el.cloneNode(true))
+                );
+                pip.document.body.style.margin = "0";
+                pip.document.body.style.height = "100vh";
+                pip.document.body.style.backgroundColor = "#0A0A0A";
+                const rootDiv = pip.document.createElement('div');
+                rootDiv.id = 'pip-root';
+                rootDiv.style.height = "100%";
+                pip.document.body.appendChild(rootDiv);
+                pip.addEventListener('pagehide', () => {
+                    setIsStealth(false);
+                    setPipWindow(null);
+                });
+                setPipWindow(pip);
+                setIsStealth(true);
+            } catch (err) {
+                console.error("PiP failed", err);
+                setIsStealth(true);
+            }
+        } else {
+            setIsStealth(true);
+        }
+    }, []);
+
     useEffect(() => {
-        console.log("App mounted. Socket status:", socket.connected);
         if (socket.connected) setConnectionStatus('connected');
 
         const onConnect = () => {
-            console.log("Socket Connected!");
             setConnectionStatus('connected');
             socket.emit('requestSessionState');
+            const savedSettings = loadLocal(STORAGE_KEYS.settings, null);
+            if (savedSettings) {
+                socket.emit('updateSettings', savedSettings);
+            }
         };
 
         const onDisconnect = () => {
-            console.log("Socket Disconnected!");
             setConnectionStatus('disconnected');
         };
 
@@ -76,12 +112,10 @@ function App() {
         };
 
         const onProviderStatus = (status) => {
-            console.log("AI Provider Status:", status);
             setProviderInfo(status || { hasOpenAI: false, hasGemini: false, isOnline: false });
         };
 
         const onAnswer = (text) => {
-            console.log("Received Answer:", text);
             setSuggestions(text);
             setIsLoadingAnswer(false);
         };
@@ -94,7 +128,9 @@ function App() {
                 setSuggestions(prev => prev + data.chunk);
             }
         };
+
         const onResumeConfirmed = () => setResumeLoaded(true);
+
         socket.on('connect', onConnect);
         socket.on('disconnect', onDisconnect);
         socket.on('connect_error', onConnectError);
@@ -102,6 +138,7 @@ function App() {
         socket.on('answer', onAnswer);
         socket.on('answerChunk', onAnswerChunk);
         socket.on('resumeConfirmed', onResumeConfirmed);
+
         return () => {
             socket.off('connect', onConnect);
             socket.off('disconnect', onDisconnect);
@@ -157,13 +194,19 @@ function App() {
                                 : 'Offline FastEngine'}
                         </span>
                     </div>
-                    <p className="text-[13px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>Speak or share your screen. Get a clean answer instantly.</p>
+                    <p className="text-[13px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+                        Speak or share your screen. Get a clean answer instantly.
+                    </p>
                 </div>
 
                 <ScreenWatcher onFrameUpdate={setCurrentScreenFrame} />
 
                 <div className="card p-5">
-                    <SpeechInput socket={socket} onTranscript={setLastTranscript} additionalContext={{ image: currentScreenFrame }} />
+                    <SpeechInput
+                        socket={socket}
+                        onTranscript={handleTranscriptSent}
+                        additionalContext={{ image: currentScreenFrame }}
+                    />
                     <div className="mt-4 rounded-lg border p-3 min-h-[72px]" style={{ background: 'var(--surface-2)', borderColor: 'var(--border)' }}>
                         <div className="text-[11px] font-medium tracking-wide uppercase" style={{ color: 'var(--text-faint)' }}>You said</div>
                         <p className="text-[13px] italic leading-relaxed mt-1" style={{ color: 'var(--text)' }}>{lastTranscript || "Waiting…"}</p>
@@ -171,21 +214,7 @@ function App() {
                 </div>
 
                 <button
-                    onClick={async () => {
-                        if ('documentPictureInPicture' in window) {
-                            try {
-                                const pip = await window.documentPictureInPicture.requestWindow({ width: 360, height: 520 });
-                                ;[...document.head.querySelectorAll('style, link[rel="stylesheet"]')].forEach(el => pip.document.head.appendChild(el.cloneNode(true)));
-                                pip.document.body.style.margin = "0"; pip.document.body.style.height = "100vh"; pip.document.body.style.backgroundColor = "#0A0A0A";
-                                const rootDiv = pip.document.createElement('div'); rootDiv.id = 'pip-root'; rootDiv.style.height = "100%"; pip.document.body.appendChild(rootDiv);
-                                pip.addEventListener('pagehide', () => { setIsStealth(false); setPipWindow(null); });
-                                setPipWindow(pip); setIsStealth(true);
-                            } catch (err) {
-                                console.error("PiP failed", err);
-                                setIsStealth(true);
-                            }
-                        } else setIsStealth(true);
-                    }}
+                    onClick={openStealthPip}
                     className="w-full py-3 rounded-lg bg-[#0A0A0A] dark:bg-white text-white dark:text-black text-[13px] font-medium hover:opacity-90 transition-opacity"
                 >
                     <span>Open as floating window</span>
@@ -193,14 +222,12 @@ function App() {
                 </button>
             </div>
 
-            <div className="flex-1 min-h-[420px] card overflow-hidden flex flex-col">
-                <div className="px-4 py-3 border-b flex items-center justify-between text-xs" style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
-                    <span className="font-medium">AI Answer</span>
-                    <span>Streams as you speak</span>
-                </div>
-                <div className="flex-1 overflow-y-auto p-5">
-                    <SuggestionPanel suggestions={suggestions} loading={isLoadingAnswer} />
-                </div>
+            <div className="flex-1 min-h-[420px] flex flex-col overflow-hidden">
+                <SuggestionPanel
+                    suggestions={suggestions}
+                    loading={isLoadingAnswer}
+                    onPopOut={openStealthPip}
+                />
             </div>
         </div>
     );
@@ -208,7 +235,15 @@ function App() {
     return (
         <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg)', color: 'var(--text)' }}>
             <Toaster />
-            {isStealth && <StealthOverlay suggestions={suggestions} pipWindow={pipWindow} lastTranscript={lastTranscript} onClear={() => { setSuggestions(""); setLastTranscript(""); }} onClose={() => { setIsStealth(false); if (pipWindow) pipWindow.close(); }} />}
+            {isStealth && (
+                <StealthOverlay
+                    suggestions={suggestions}
+                    pipWindow={pipWindow}
+                    lastTranscript={lastTranscript}
+                    onClear={() => { setSuggestions(""); setLastTranscript(""); }}
+                    onClose={() => { setIsStealth(false); if (pipWindow) pipWindow.close(); }}
+                />
+            )}
             {showSettings && <ToneSettings socket={socket} onClose={() => setShowSettings(false)} />}
             {showResumeUpload && <ResumeUploader socket={socket} apiBaseUrl={API_BASE_URL} onClose={() => setShowResumeUpload(false)} />}
 
@@ -220,7 +255,11 @@ function App() {
                             <div className="text-[13px] font-semibold tracking-tight leading-none">Final Round</div>
                             <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Prep Studio</div>
                         </div>
-                        <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="w-7 h-7 rounded-full border flex items-center justify-center" style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
+                        <button
+                            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                            className="w-7 h-7 rounded-full border flex items-center justify-center"
+                            style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+                        >
                             {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
                         </button>
                     </div>
@@ -257,7 +296,7 @@ function App() {
             )}
 
             <div className={`flex-1 min-w-0 flex flex-col ${isStealth ? 'opacity-0 pointer-events-none' : ''}`}>
-                <div className="flex-1 overflow-y-auto">
+                <div className="flex-1 overflow-y-auto pb-16 md:pb-0">
                     {activeTab === 'dashboard' && <Dashboard onStartMock={() => setActiveTab('mock')} onStartCopilot={() => setActiveTab('copilot')} onNavigate={(tab) => setActiveTab(tab)} />}
                     {activeTab === 'copilot' && copilotView}
                     {activeTab === 'code' && <div className="p-6 h-full"><CodeEditor /></div>}

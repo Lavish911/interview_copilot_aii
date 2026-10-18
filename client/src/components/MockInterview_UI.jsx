@@ -12,11 +12,18 @@ const MockInterviewUI = ({ socket, onExit }) => {
     const [elapsed, setElapsed] = useState(0);
     const [, setHistory] = useState(() => loadLocal(STORAGE_KEYS.mockHistory, []));
     const questionStartRef = useRef(null);
-    const answerRef = useRef(null);
+    const questionRef = useRef("");
+    const answerRef = useRef("");
 
+    useEffect(() => { questionRef.current = question; }, [question]);
     useEffect(() => { answerRef.current = answer; }, [answer]);
+
     useEffect(() => {
-        const id = setInterval(() => { if (questionStartRef.current && !feedback) setElapsed(Math.floor((Date.now() - questionStartRef.current)/1000)); }, 1000);
+        const id = setInterval(() => {
+            if (questionStartRef.current && !feedback) {
+                setElapsed(Math.floor((Date.now() - questionStartRef.current) / 1000));
+            }
+        }, 1000);
         return () => clearInterval(id);
     }, [feedback]);
 
@@ -29,29 +36,61 @@ const MockInterviewUI = ({ socket, onExit }) => {
             const preferred = voices.find(v => v.name.includes('Google US English')) || voices[0];
             const u = new SpeechSynthesisUtterance(text);
             if (preferred) u.voice = preferred;
-            u.rate = 1.0; synth.speak(u);
+            u.rate = 1.0;
+            synth.speak(u);
         };
-        if (synth.getVoices().length === 0) synth.onvoiceschanged = () => { pick(); synth.onvoiceschanged = null; };
-        else pick();
+        if (synth.getVoices().length === 0) {
+            synth.onvoiceschanged = () => { pick(); synth.onvoiceschanged = null; };
+        } else {
+            pick();
+        }
     };
 
     useEffect(() => {
-        socket.on('mockQuestion', (q) => {
-            setQuestion(q); setFeedback(null); setAnswer(""); setLoading(false);
-            setQuestionCount(c => c + 1); questionStartRef.current = Date.now(); setElapsed(0); speakText(q);
-        });
-        socket.on('mockFeedback', (data) => {
-            const fb = data || { score: 0, feedback: "Error", betterAnswer: "N/A" };
-            setFeedback(fb); setLoading(false);
-            const seconds = questionStartRef.current ? Math.round((Date.now() - questionStartRef.current)/1000) : 0;
-            const entry = { question, answer: answerRef.current, score: fb.score, feedback: fb.feedback, at: Date.now(), seconds };
-            setHistory(prev => { const next = [...prev, entry].slice(-50); saveLocal(STORAGE_KEYS.mockHistory, next); return next; });
-            if (fb.score) speakText(`I give that a ${fb.score} out of 10.`);
-        });
-        return () => { socket.off('mockQuestion'); socket.off('mockFeedback'); window.speechSynthesis.cancel(); };
-    }, [socket, question]);
+        const onMockQuestion = (q) => {
+            questionRef.current = q;
+            setQuestion(q);
+            setFeedback(null);
+            setAnswer("");
+            setLoading(false);
+            setQuestionCount(c => c + 1);
+            questionStartRef.current = Date.now();
+            setElapsed(0);
+            speakText(q);
+        };
 
-    const fmt = (s) => `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+        const onMockFeedback = (data) => {
+            const fb = data || { score: 0, feedback: "Error", betterAnswer: "N/A" };
+            setFeedback(fb);
+            setLoading(false);
+            const seconds = questionStartRef.current ? Math.round((Date.now() - questionStartRef.current) / 1000) : 0;
+            const entry = {
+                question: questionRef.current,
+                answer: answerRef.current,
+                score: fb.score,
+                feedback: fb.feedback,
+                at: Date.now(),
+                seconds
+            };
+            setHistory(prev => {
+                const next = [...prev, entry].slice(-50);
+                saveLocal(STORAGE_KEYS.mockHistory, next);
+                return next;
+            });
+            if (fb.score) speakText(`I give that a ${fb.score} out of 10.`);
+        };
+
+        socket.on('mockQuestion', onMockQuestion);
+        socket.on('mockFeedback', onMockFeedback);
+
+        return () => {
+            socket.off('mockQuestion', onMockQuestion);
+            socket.off('mockFeedback', onMockFeedback);
+            if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+        };
+    }, [socket]);
+
+    const fmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
     return (
         <div className="p-6 md:p-8 max-w-[860px] mx-auto w-full">
@@ -68,7 +107,11 @@ const MockInterviewUI = ({ socket, onExit }) => {
                 <div className="card p-8 text-center">
                     <h3 className="text-[15px] font-semibold">Ready?</h3>
                     <p className="text-[13px] mt-1" style={{ color: 'var(--text-muted)' }}>One question at a time, tailored to your resume. Get a score and a perfect answer.</p>
-                    <button onClick={() => { setLoading(true); socket.emit('startMockInterview'); }} disabled={loading} className="mt-5 px-6 py-2.5 rounded-lg bg-[#0A0A0A] dark:bg-white text-white dark:text-black text-[13px] font-medium disabled:opacity-50">
+                    <button
+                        onClick={() => { setLoading(true); socket.emit('startMockInterview'); }}
+                        disabled={loading}
+                        className="mt-5 px-6 py-2.5 rounded-lg bg-[#0A0A0A] dark:bg-white text-white dark:text-black text-[13px] font-medium disabled:opacity-50"
+                    >
                         {loading ? 'Getting question…' : 'Start Interview'}
                     </button>
                 </div>
@@ -84,9 +127,19 @@ const MockInterviewUI = ({ socket, onExit }) => {
 
                     <div className="card p-4">
                         <div className="text-[11px] tracking-wide uppercase mb-2" style={{ color: 'var(--text-faint)' }}>Your answer</div>
-                        <textarea value={answer} onChange={(e)=>setAnswer(e.target.value)} placeholder="Use STAR: Situation, Task, Action, Result." className="w-full h-32 rounded-lg border p-3 text-[13px] leading-relaxed resize-none" style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text)' }} />
+                        <textarea
+                            value={answer}
+                            onChange={(e) => setAnswer(e.target.value)}
+                            placeholder="Use STAR: Situation, Task, Action, Result."
+                            className="w-full h-32 rounded-lg border p-3 text-[13px] leading-relaxed resize-none"
+                            style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text)' }}
+                        />
                         {!feedback && (
-                            <button onClick={() => { setLoading(true); socket.emit('submitMockAnswer', { question, answer }); }} disabled={loading || !answer.trim()} className="mt-3 w-full py-2.5 rounded-lg bg-[#0A0A0A] dark:bg-white text-white dark:text-black text-[13px] font-medium disabled:opacity-50">
+                            <button
+                                onClick={() => { setLoading(true); socket.emit('submitMockAnswer', { question, answer }); }}
+                                disabled={loading || !answer.trim()}
+                                className="mt-3 w-full py-2.5 rounded-lg bg-[#0A0A0A] dark:bg-white text-white dark:text-black text-[13px] font-medium disabled:opacity-50"
+                            >
                                 {loading ? 'Scoring…' : 'Submit answer'}
                             </button>
                         )}
@@ -101,11 +154,24 @@ const MockInterviewUI = ({ socket, onExit }) => {
                             <p className="text-[13px] leading-relaxed" style={{ color: 'var(--text)' }}>{feedback.feedback}</p>
                             <div className="mt-3 rounded-lg border p-3" style={{ background: 'var(--surface-2)', borderColor: 'var(--border)' }}>
                                 <div className="text-[11px] tracking-wide uppercase mb-1" style={{ color: 'var(--text-faint)' }}>Perfect answer</div>
-                                <ReactMarkdown className="prose prose-sm max-w-none text-[13px]" style={{ color: 'var(--text)' }}>{feedback.betterAnswer}</ReactMarkdown>
+                                <div className="prose prose-sm max-w-none text-[13px]" style={{ color: 'var(--text)' }}>
+                                    <ReactMarkdown>{feedback.betterAnswer}</ReactMarkdown>
+                                </div>
                             </div>
                             <div className="mt-3 flex gap-2">
-                                <button onClick={() => { navigator.clipboard.writeText(feedback.betterAnswer||''); toast('Copied','success'); }} className="px-4 py-2 rounded-lg border text-[13px] font-medium" style={{ borderColor: 'var(--border)' }}>Copy</button>
-                                <button onClick={() => { setFeedback(null); setAnswer(""); setLoading(true); socket.emit('startMockInterview'); }} className="flex-1 py-2 rounded-lg bg-[#0A0A0A] dark:bg-white text-white dark:text-black text-[13px] font-medium">Next question</button>
+                                <button
+                                    onClick={() => { navigator.clipboard.writeText(feedback.betterAnswer || ''); toast('Copied', 'success'); }}
+                                    className="px-4 py-2 rounded-lg border text-[13px] font-medium"
+                                    style={{ borderColor: 'var(--border)' }}
+                                >
+                                    Copy
+                                </button>
+                                <button
+                                    onClick={() => { setFeedback(null); setAnswer(""); setLoading(true); socket.emit('startMockInterview'); }}
+                                    className="flex-1 py-2 rounded-lg bg-[#0A0A0A] dark:bg-white text-white dark:text-black text-[13px] font-medium"
+                                >
+                                    Next question
+                                </button>
                             </div>
                         </div>
                     )}

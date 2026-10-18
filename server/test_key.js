@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import { CANONICAL_GEMINI_MODELS } from './ai_engine.js';
 
@@ -20,10 +20,9 @@ async function testKey(modelName, dryRun = false) {
         console.log(`[Validation] dotenv loaded. Model target: ${modelName}. Key configured: true. (Dry run — no live request)`);
         return;
     }
-    const genAI = new GoogleGenerativeAI(key);
-    const model = genAI.getGenerativeModel({ model: modelName });
+    const ai = new GoogleGenAI({ apiKey: key });
     try {
-        await model.generateContent("hello");
+        await ai.models.generateContent({ model: modelName, contents: "hello" });
         console.log(`${modelName}: Success!`);
     } catch (e) {
         console.log(`${modelName}: ERROR -> ${e.message.split('\n')[0]}`);

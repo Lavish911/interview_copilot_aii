@@ -13,7 +13,35 @@ import { fileURLToPath } from 'url';
 import { AIEngine, FastEngine, classifyError, getOpaqueKeyLabel, validateGeminiCredentialFormat, validateOpenAICredentialFormat, logProviderAttempt } from './ai_engine.js';
 
 const require = createRequire(import.meta.url);
-const { PDFParse } = require("pdf-parse");
+const pdfParseModule = require("pdf-parse");
+
+async function extractPdfText(buffer) {
+    if (typeof pdfParseModule === 'function') {
+        const data = await pdfParseModule(buffer);
+        return data?.text || '';
+    }
+    if (pdfParseModule && typeof pdfParseModule.PDFParse === 'function') {
+        const parser = new pdfParseModule.PDFParse({ data: buffer });
+        const result = await parser.getText();
+        if (typeof parser.destroy === 'function') await parser.destroy();
+        return result?.text || '';
+    }
+    if (typeof pdfParseModule?.default === 'function') {
+        const data = await pdfParseModule.default(buffer);
+        return data?.text || '';
+    }
+    throw new Error('Unsupported pdf-parse export format');
+}
+
+async function cascadeVisionContent(buffer, mimeType, requestId = 'ocr') {
+    const promptParts = [
+        { inlineData: { data: buffer.toString('base64'), mimeType } },
+        'Transcribe the full text of this document verbatim. Do not summarize. Just return the text content.'
+    ];
+    const result = await aiEngine.cascadeGemini(promptParts, { requestId });
+    const response = await result.response;
+    return typeof response.text === 'function' ? response.text() : (response.text || '');
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -118,7 +146,7 @@ app.use(cors({
     credentials: false
 }));
 
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '5mb' }));
 
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -378,6 +406,30 @@ app.get('/health/ready', (req, res) => {
 // =============================================================================
 
 
+function emitProviderStatus(socket) {
+    const health = aiEngine.getProviderHealth();
+    socket.emit('providerStatus', {
+        hasOpenAI: health.openai.liveVerified || health.openai.formatValid,
+        hasGemini: health.gemini.liveVerified || health.gemini.formatValid,
+        isOnline: health.liveAIReady || (health.gemini.formatValid && health.gemini.keysActive > 0) || health.openai.formatValid,
+        activeKeys: health.gemini.keysActive,
+        geminiStatus: health.gemini.status,
+        openaiStatus: health.openai.status,
+        configured: {
+            openai: health.openai.configured,
+            gemini: health.gemini.configured
+        },
+        formatValid: {
+            openai: health.openai.formatValid,
+            gemini: health.gemini.formatValid
+        },
+        liveVerified: {
+            openai: health.openai.liveVerified,
+            gemini: health.gemini.liveVerified
+        }
+    });
+}
+
 io.on('connection', (socket) => {
     console.log(`🔗 Connected: ${socket.id}`);
     const session = getSession(socket.id);
@@ -395,30 +447,14 @@ io.on('connection', (socket) => {
                 detailLevel: session.settings.detailLevel
             }
         });
+        if (session.resume) {
+            socket.emit('resumeConfirmed', "Resume received and analyzed.");
+        }
+        emitProviderStatus(socket);
     });
 
     // Report provider status truthfully
-    const health = aiEngine.getProviderHealth();
-    socket.emit('providerStatus', {
-        hasOpenAI: health.openai.liveVerified,
-        hasGemini: health.gemini.liveVerified,
-        isOnline: health.liveAIReady,
-        activeKeys: health.gemini.keysActive,
-        geminiStatus: health.gemini.status,
-        openaiStatus: health.openai.status,
-        configured: {
-            openai: health.openai.configured,
-            gemini: health.gemini.configured
-        },
-        formatValid: {
-            openai: health.openai.formatValid,
-            gemini: health.gemini.formatValid
-        },
-        liveVerified: {
-            openai: health.openai.liveVerified,
-            gemini: health.gemini.liveVerified
-        }
-    });
+    emitProviderStatus(socket);
 
     socket.on('disconnect', () => {
         console.log(`🔌 Disconnected: ${socket.id}`);
@@ -848,20 +884,12 @@ app.post('/api/upload-resume', (req, res, next) => {
 
         if (mimeType === 'application/pdf') {
             try {
-                const parser = new PDFParse({ data: req.file.buffer });
-                const data = await parser.getText();
-                await parser.destroy();
-                text = data.text;
+                text = await extractPdfText(req.file.buffer);
                 if (text.trim().length < 50) throw new Error("Scanned PDF detected");
             } catch (e) {
                 // Try Gemini vision OCR
                 try {
-                    const promptParts = [
-                        { inlineData: { data: req.file.buffer.toString('base64'), mimeType: 'application/pdf' } },
-                        "Transcribe the text of this document verbatim."
-                    ];
-                    const ocrResult = await aiEngine.cascadeGemini(promptParts, { requestId });
-                    text = (await ocrResult.response).text();
+                    text = await cascadeVisionContent(req.file.buffer, 'application/pdf', requestId);
                 } catch (ocrErr) {
                     throw new Error("PDF text extraction failed and Vision OCR unavailable");
                 }
@@ -870,12 +898,7 @@ app.post('/api/upload-resume', (req, res, next) => {
             const result = await mammoth.extractRawText({ buffer: req.file.buffer });
             text = result.value;
         } else if (mimeType.startsWith('image/')) {
-            const promptParts = [
-                { inlineData: { data: req.file.buffer.toString('base64'), mimeType: mimeType } },
-                "Transcribe the full text of this resume verbatim."
-            ];
-            const ocrResult = await aiEngine.cascadeGemini(promptParts, { requestId });
-            text = (await ocrResult.response).text();
+            text = await cascadeVisionContent(req.file.buffer, mimeType, requestId);
         } else {
             text = req.file.buffer.toString('utf8');
         }
