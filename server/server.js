@@ -12,7 +12,7 @@ import fs from 'fs';
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { AIEngine, FastEngine, classifyError, getOpaqueKeyLabel, validateGeminiCredentialFormat, validateOpenAICredentialFormat, logProviderAttempt } from './ai_engine.js';
+import { AIEngine, FastEngine, classifyError, getOpaqueKeyLabel, validateGeminiCredentialFormat, validateOpenAICredentialFormat, logProviderAttempt, normalizeSpeechQuery } from './ai_engine.js';
 import { RAGEngine, normalizeDocumentText } from './rag_engine.js';
 
 const require = createRequire(import.meta.url);
@@ -681,17 +681,16 @@ io.on('connection', (socket) => {
 
             if (transcript.trim().length === 0 && !image) return;
             if (transcript.length > 5000) transcript = transcript.substring(0, 5000);
+            const cleanedQuestion = normalizeSpeechQuery(transcript) || transcript.trim();
 
-            console.log(`[${requestId}] 📥 Question: [${transcript.length} chars] ${image ? '+ [Image payload]' : ''}`);
-
-            socket.emit('answerChunk', { chunk: "🔄 *Analyzing question...*\n\n", isFirst: true });
+            console.log(`[${requestId}] 📥 Question: [${cleanedQuestion.length} chars] ${image ? '+ [Image payload]' : ''}`);
 
             // Perform semantic RAG retrieval over the socket owner's indexed documents
             let ragContext = null;
             const ownerDocs = ragEngine.listDocuments(socket.id);
-            if (ownerDocs.length > 0 && transcript.trim().length > 0) {
+            if (ownerDocs.length > 0 && cleanedQuestion.length > 0) {
                 try {
-                    ragContext = await ragEngine.retrieveContext(socket.id, transcript, {
+                    ragContext = await ragEngine.retrieveContext(socket.id, cleanedQuestion, {
                         requestId: `${requestId}-rag`,
                         topK,
                         docIds
@@ -709,7 +708,7 @@ io.on('connection', (socket) => {
             }
 
             const result = await aiEngine.generateAnswer(
-                transcript, image, session, requestId,
+                cleanedQuestion, image, session, requestId,
                 (chunkText, isFirst) => {
                     if (!socket.connected || abortController.signal.aborted) {
                         return false;
@@ -733,11 +732,7 @@ io.on('connection', (socket) => {
                     model: result.model
                 });
 
-                if (result.isOffline) {
-                    socket.emit('answer', `📴 **Offline Mode**\nNo AI provider is currently available. Using built-in knowledge base.\n\n${result.text}`);
-                } else {
-                    socket.emit('answer', result.text);
-                }
+                socket.emit('answer', result.text);
             }
 
         } catch (error) {
@@ -751,7 +746,7 @@ io.on('connection', (socket) => {
                     sources: [],
                     totalIndexedChunks: 0
                 });
-                socket.emit('answer', `📴 **Offline Mode**\nAI providers temporarily unavailable. Using built-in knowledge base.\n\n${offlineAnswer}`);
+                socket.emit('answer', offlineAnswer);
             }
         } finally {
             socket.off('disconnect', onDisconnect);

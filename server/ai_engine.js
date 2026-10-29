@@ -26,23 +26,65 @@ export const CANONICAL_OPENAI_EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MOD
 // KNOWLEDGE BASE (Offline AI Fallback — Tier 3)
 // =============================================================================
 
+const SPEECH_PHRASE_CORRECTIONS = [
+    [/\b(we act|re act|reacts|react j s|react js)\b/gi, "React"],
+    [/\b(virtual dorm|virtual don|virtual d o m)\b/gi, "Virtual DOM"],
+    [/\b(you state|used state|use state)\b/gi, "useState"],
+    [/\b(used effect|user fact|use effect)\b/gi, "useEffect"],
+    [/\b(type script|tight script|typescripts)\b/gi, "TypeScript"],
+    [/\b(java script|javascripts)\b/gi, "JavaScript"],
+    [/\b(notes js|note js|no js|node j s|know js)\b/gi, "Node.js"],
+    [/\b(even loop|event luke)\b/gi, "Event Loop"],
+    [/\b(rest a p i|rest api|breast api|west api)\b/gi, "REST API"],
+    [/\b(graph q l|graph ql|giraffe ql)\b/gi, "GraphQL"],
+    [/\b(no sequel|no s q l)\b/gi, "NoSQL"],
+    [/\b(post grass|post gress|post gres|postgres q l)\b/gi, "PostgreSQL"],
+    [/\b(s q l|sequel)\b/gi, "SQL"],
+    [/\b(mongo db|mongo tv|mango db)\b/gi, "MongoDB"],
+    [/\b(red is|read is|reddish)\b/gi, "Redis"],
+    [/\b(cooper net is|cooper netties|kuber netis|cuban it is|k 8 s)\b/gi, "Kubernetes"],
+    [/\b(micro service|micro services)\b/gi, "microservices"],
+    [/\b(sister design|system designed)\b/gi, "system design"],
+    [/\b(a sink|a synchronous)\b/gi, "async"],
+    [/\b(close sure)\b/gi, "closure"],
+    [/\b(cashing)\b/gi, "caching"],
+    [/\b(ci cd|c i c d|see i see d)\b/gi, "CI/CD"]
+];
+
+export function normalizeSpeechQuery(rawText = "") {
+    if (!rawText || typeof rawText !== "string") return "";
+    let text = rawText.trim();
+    if (!text) return "";
+    text = text.replace(/^(?:(?:um+|uh+|hmm+|er+|ah+|oh+|like|you know|i mean|so yeah|okay so|alright so|well|so)[,\s]+)+/i, "").trim();
+    for (const [pattern, replacement] of SPEECH_PHRASE_CORRECTIONS) {
+        text = text.replace(pattern, replacement);
+    }
+    if (/\b(redis|database|memory|server|browser|cdn|api|query|data|hit|miss|layer|invalidat|ttl|store|system|design|scale|latency)\b/i.test(text)) {
+        text = text.replace(/\bcash\b/gi, "cache");
+    }
+    return text.replace(/\b(\w+)(?:\s+\1\b)+/gi, "$1").replace(/\s+/g, " ").trim();
+}
+
 export const KNOWLEDGE_BASE = {
-    "react": "### ⚛️ React Deep Dive\n**Core Concepts:**\n- **Virtual DOM**: Lightweight memory representation of the DOM synced with real DOM via reconciliation.\n- **Hooks**: `useState`, `useEffect`, `useMemo`, `useCallback` for functional lifecycle.\n- **Fiber Architecture**: Incremental rendering enabling prioritization and interruption.\n- **Context API**: State broadcasting without prop drilling.",
-    "css": "### 🎨 CSS Mastery\n- **Flexbox vs Grid**: Flex is 1-dimensional (content-first); Grid is 2-dimensional (layout-first).\n- **Box Model**: Margin, Border, Padding, Content.\n- **Cascade & Specificity**: Inline > ID > Class/Attribute > Element.\n- **Responsive Design**: Mobile-first media queries and relative typography (`rem`, `ch`, `clamp`).",
-    "performance": "### 🚀 Web Performance\n- **Core Web Vitals**: LCP (loading), INP/FID (interactivity), CLS (visual stability).\n- **Network Optimization**: Brotli compression, HTTP/2 multiplexing, CDN caching, image optimization (`webp`, `avif`).\n- **Runtime Optimization**: Code splitting with dynamic `import()`, virtualization for long lists, debouncing heavy handlers.",
-    "node": "### 🟢 Node.js Architecture\n- **Event Loop**: Powered by libuv. Phases: Timers → Pending Callbacks → Idle/Prepare → Poll → Check (`setImmediate`) → Close.\n- **Asynchronous I/O**: Offloads file/DNS/crypto work to libuv worker threadpool.\n- **Streams**: Chunked data pipeline (`Readable`, `Writable`, `Transform`) preventing memory exhaustion.",
-    "database": "### 🗄️ Databases & Data Modeling\n- **Relational (ACID)**: PostgreSQL, MySQL. Strong consistency, normalization, foreign keys.\n- **NoSQL (BASE)**: MongoDB, DynamoDB, Redis. Schema flexibility, horizontal sharding.\n- **Indexing**: B-Tree for range/equality queries, Hash indexes for point lookups.",
-    "api": "### 🔌 API Design\n- **REST**: Stateless, uniform interface, resource-oriented HTTP verbs (GET, POST, PUT, PATCH, DELETE).\n- **GraphQL**: Declarative schema, client-driven querying, prevents over/under-fetching.\n- **WebSockets / Socket.IO**: Bi-directional, persistent full-duplex TCP communication.",
-    "dsa": "### 🧠 Data Structures & Algorithms\n- **Complexity**: Big-O notation measures asymptotic worst-case time and space growth.\n- **Hash Tables**: O(1) average lookup/insert via hash functions and collision resolution.\n- **Trees & Graphs**: BFS (Queue, shortest path) vs DFS (Stack/Recursion, topological sort, cycle detection).\n- **Sorting**: QuickSort (average O(n log n)), MergeSort (guaranteed O(n log n), stable).",
-    "system design": "### 🏗️ System Design Principles\n- **Scalability**: Horizontal scaling behind Load Balancers (Layer 4 TCP vs Layer 7 HTTP).\n- **Caching**: Multi-tier caching (Browser → CDN → Gateway → Redis/Memcached → Database).\n- **CAP Theorem**: Consistency vs Availability under network Partitions.\n- **Reliability**: Circuit breakers, rate limiters (Token Bucket), exponential backoff with jitter.",
-    "tell me about yourself": "### 👤 The Professional Pitch\n**Structure:**\n1. **Present**: 'I am a Software Engineer specializing in scalable full-stack web applications...'\n2. **Past**: 'Previously, I built and optimized production systems, focusing on performance, reliability, and clean architecture...'\n3. **Future**: 'Now, I am excited about this role because it directly aligns with my passion for high-impact technical challenges.'",
-    "weakness": "### 🛡️ 'What is your greatest weakness?'\n**Strategy**: Genuine technical or procedural weakness + Active mitigation strategy.\n**Example**: 'Earlier in my career, I tended to over-engineer solutions before validating product demand. To fix this, I adopted strict MVP scoping and time-boxing.'",
-    "default": "### 🤖 Technical Knowledge Engine (Offline Mode)\nI am ready. Ask about:\n- **Frontend**: React, CSS, Web Performance, State Management\n- **Backend**: Node.js, Event Loop, REST, System Design\n- **CS & Algorithms**: Big O, Data Structures, Concurrency\n- **Behavioral**: Pitch, Conflict, STAR Methodology"
+    "react": "In my day-to-day React work, I focus on keeping components predictable and renders fast. React uses a Virtual DOM and its Fiber reconciliation engine to diff state changes in memory and prioritize urgent UI updates—like user input—before committing minimal changes to the real DOM.\n\nWhen I'm building features, I rely on hooks like `useState` and `useEffect` for local state and side effects, and I reach for `useMemo` or `useCallback` only when profiling shows expensive recalculations or unnecessary child re-renders.",
+    "css": "When I'm laying out interfaces in CSS, I usually combine CSS Grid for the macro 2D page structure with Flexbox for 1D alignment inside components. I stick to a mobile-first approach using fluid units like `rem` and `clamp()`, and keep specificity flat so styles stay easy to maintain across the team.",
+    "performance": "Whenever I optimize web performance, I start by measuring Core Web Vitals—specifically LCP for loading speed, INP for responsiveness, and CLS for visual stability. On the frontend, I get the biggest wins from route-level code splitting, virtualizing long lists, and serving compressed `avif` or `webp` assets through a CDN. On the backend, adding Redis caching and trimming payload sizes usually drops p99 latency right away.",
+    "node": "What makes Node.js great for I/O-heavy services is its single-threaded Event Loop powered by libuv. Instead of blocking a thread on database queries or network calls, Node delegates those operations asynchronously and handles thousands of concurrent connections with very low memory overhead. If I ever have CPU-heavy work, I offload it to Worker Threads or a background queue so the main event loop stays responsive.",
+    "database": "When choosing between SQL and NoSQL, I look at consistency requirements and access patterns first. For transactional data and clear relationships, I prefer PostgreSQL because ACID guarantees and B-Tree indexing keep data integrity rock-solid. When I need ultra-fast key-value lookups, session state, or rate limiting, I pair it with Redis or a horizontally sharded NoSQL store.",
+    "api": "When designing APIs, I focus on clean contracts, idempotency, and predictable error handling. For most CRUD and resource workflows, I build stateless REST APIs with cursor-based pagination and strict input validation. If the frontend needs real-time bi-directional updates—like live streaming or notifications—I use WebSockets or Socket.IO instead of heavy polling.",
+    "dsa": "When I approach an algorithmic problem, I always clarify constraints and edge cases first, then start with a clean working approach before optimizing time and space complexity. In practice, trading a bit of memory for a Hash Map or Set often brings an O(n²) nested lookup down to O(n), while BFS and DFS are my go-to patterns for graph and tree traversal.",
+    "closure": "A closure in JavaScript happens when a function remembers and accesses variables from its outer lexical scope even after that outer function has finished running. I use closures all the time for data encapsulation, factory functions, and debouncers—just making sure to clean up event listeners or timers so long-lived closures don't hold onto memory unnecessarily.",
+    "async": "In JavaScript, `async/await` is syntactic sugar over Promises that lets us write non-blocking asynchronous code that reads like synchronous logic. When I need to run independent network calls in parallel, I wrap them in `Promise.all()` or `Promise.allSettled()` rather than awaiting them one by one in a loop.",
+    "system design": "When I design a scalable system, I start by estimating read-to-write ratios, throughput, and latency targets. From there, I place stateless application servers behind a load balancer, add a Redis caching layer to absorb hot reads, and partition the database with read replicas or sharding. To keep the system resilient in production, I always include rate limiting, circuit breakers, and idempotent retries.",
+    "tell me about yourself": "I'm a software engineer who loves building fast, reliable full-stack applications from end to end. Over my recent projects, I've focused on designing clean React frontends and scalable Node.js and cloud backends, with a strong emphasis on real-world performance and developer experience.\n\nRight now, I'm excited about this role because I enjoy solving high-impact engineering challenges with a collaborative team, and my hands-on experience maps directly to what you're building.",
+    "weakness": "Earlier on, I sometimes caught myself spending too much time polishing edge-case architecture before getting early feedback on the core feature. Over the past year, I've become much more intentional about scoping a clean MVP first, shipping iteratively, and letting real metrics guide where we optimize next.",
+    "default": "The way I approach this in practice is by breaking the problem down into clear, maintainable pieces: first making sure the core data flow and edge cases are solid, and then optimizing for performance, scalability, and clean code."
 };
 
 export const FastEngine = {
     generateAnswer: (transcript = "") => {
-        const t = transcript.toLowerCase();
+        const cleaned = normalizeSpeechQuery(transcript);
+        const t = cleaned.toLowerCase();
         let bestMatch = "default";
         let highestScore = 0;
 
@@ -55,9 +97,25 @@ export const FastEngine = {
             if (score > highestScore) { highestScore = score; bestMatch = key; }
         });
 
+        if (/(about yourself|introduce yourself|walk me through your resume|your background|who are you)/i.test(t)) {
+            return KNOWLEDGE_BASE["tell me about yourself"];
+        }
+        if (/(sql|postgres|mongo|redis|nosql|index|query|sharding)/i.test(t) && highestScore === 0) {
+            return KNOWLEDGE_BASE["database"];
+        }
+        if (/(hook|virtual dom|fiber|usestate|useeffect|jsx|redux|frontend)/i.test(t) && highestScore === 0) {
+            return KNOWLEDGE_BASE["react"];
+        }
+        if (/(event loop|express|stream|libuv|backend)/i.test(t) && highestScore === 0) {
+            return KNOWLEDGE_BASE["node"];
+        }
+        if (/(scale|load balancer|microservice|cap theorem|rate limit|distributed|cache|caching)/i.test(t) && highestScore === 0) {
+            return KNOWLEDGE_BASE["system design"];
+        }
+
         if (highestScore > 0) return KNOWLEDGE_BASE[bestMatch];
-        if (t.includes("hello") || t.includes("hi")) return "### 👋 Ready to Interview\nI'm listening. Ask any technical question or practice behavioral scenarios.";
-        if (t.includes("thank")) return "### 👍 You're Welcome!\nReady for the next interview question.";
+        if (t.includes("hello") || t.includes("hi")) return "Hey! Glad to be chatting with you today—I'm ready whenever you want to dive into technical or behavioral questions.";
+        if (t.includes("thank")) return "Of course, happy to walk through that! Let me know what we should dive into next.";
         return KNOWLEDGE_BASE["default"];
     },
     generateMockQuestion: () => {
@@ -968,10 +1026,12 @@ export class AIEngine {
             detailLevel = "Concise"
         } = session?.settings || {};
 
+        const cleanedTranscript = normalizeSpeechQuery(transcript || "");
+
         // Build unified prompt (grounded in retrieved RAG chunks if available, else legacy session context)
         const groundedPrompt = hasRetrievedChunks
             ? buildGroundedRAGPrompt({
-                question: transcript,
+                question: cleanedTranscript || transcript,
                 retrievedChunks: ragContext.chunks,
                 role,
                 company,
@@ -981,6 +1041,13 @@ export class AIEngine {
             })
             : null;
 
+        const humanizedSystemInstruction = `You are a real human candidate interviewing live for a ${role} role at ${company}.
+Tone: ${tone}, ${detailLevel}.
+Rules:
+1. Speak naturally in first-person ("I", "my", "in my experience") as if talking directly to the interviewer in a real conversation.
+2. Never use robotic AI openings ("Certainly!", "Great question!", "Here is an answer:") or stiff textbook headers ("### Introduction", "Present / Past / Future").
+3. The input comes from live microphone speech-to-text and may contain misheard words or homophones—infer the intended ${role} interview question and answer it directly and naturally.`;
+
         // --- TIER 1: OpenAI ---
         if (this.openaiClient && !image) {
             diagnostics.tier1_openai.attempted = true;
@@ -988,12 +1055,12 @@ export class AIEngine {
             try {
                 const messages = groundedPrompt
                     ? [
-                        { role: "system", content: "You are an expert interview copilot. Follow all grounding and security rules strictly." },
+                        { role: "system", content: "You are a real human candidate in a live interview. Follow all grounding, security, and natural spoken style rules strictly." },
                         { role: "user", content: groundedPrompt }
                     ]
                     : [
-                        { role: "system", content: "You are an expert technical interviewer. Provide a concise answer." },
-                        { role: "user", content: transcript }
+                        { role: "system", content: humanizedSystemInstruction },
+                        { role: "user", content: cleanedTranscript || transcript }
                     ];
 
                 // OpenAI SDK v4 request options (timeout passed as second argument)
@@ -1050,9 +1117,9 @@ export class AIEngine {
                         promptParts.push({ inlineData: { data: base64Data, mimeType: "image/jpeg" } });
                     }
                 } else {
-                    const resumeSnippet = session.resume ? `\nCANDIDATE RESUME: "${session.resume.substring(0, 5000)}"` : "";
+                    const resumeSnippet = session.resume ? `\nCANDIDATE RESUME CONTEXT:\n"${session.resume.substring(0, 5000)}"` : "";
                     promptParts = [
-                        `Act as a Senior ${role} interviewing at ${company}. Speak as the candidate. Direct, clear, technical depth.${resumeSnippet}`
+                        `${humanizedSystemInstruction}${resumeSnippet}`
                     ];
 
                     if (image) {
@@ -1060,10 +1127,10 @@ export class AIEngine {
                         promptParts.push({ inlineData: { data: base64Data, mimeType: "image/jpeg" } });
                     }
 
-                    if (transcript) {
-                        promptParts.push(`\nQUESTION / SPEECH: "${transcript}"`);
+                    if (cleanedTranscript || transcript) {
+                        promptParts.push(`\nINTERVIEW QUESTION (from live mic speech): "${cleanedTranscript || transcript}"`);
                     } else {
-                        promptParts.push(`\nQUESTION: Analyze the visual code / diagram from screen.`);
+                        promptParts.push(`\nINTERVIEW QUESTION: Walk through the visual code or diagram on screen naturally in first person.`);
                     }
                 }
 

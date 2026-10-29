@@ -1,38 +1,152 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 
-const CORRECTIONS = {
-    // Frontend
-    "reacts": "React", "re act": "React", "type script": "TypeScript",
-    "java script": "JavaScript", "view js": "Vue.js", "next js": "Next.js",
-    "cs s": "CSS", "ht ml": "HTML", "tail wind": "Tailwind", "re ducks": "Redux",
-    // Backend
-    "notes js": "Node.js", "note js": "Node.js", "no js": "Node.js",
-    "express js": "Express.js", "nest js": "NestJS", "spring boot": "Spring Boot",
-    "jason": "JSON", "j son": "JSON", "a p i": "API", "graph q l": "GraphQL",
-    // Databases
-    "s q l": "SQL", "my sql": "MySQL", "post grass": "PostgreSQL", "post gress": "PostgreSQL",
-    "no sequel": "NoSQL", "mongo db": "MongoDB", "mongo tv": "MongoDB", "mango db": "MongoDB",
-    "red is": "Redis", "read is": "Redis",
-    // DevOps & Cloud
-    "cooper net is": "Kubernetes", "kuber netis": "Kubernetes", "cuban it is": "Kubernetes",
-    "a w s": "AWS", "g c p": "GCP", "get hub": "GitHub", "git lab": "GitLab",
-    "ci cd": "CI/CD", "c i c d": "CI/CD",
-    // Core CS
-    "d s a": "DSA", "b s a": "DSA", "big o": "Big O", "object oriented": "OOP",
-    "c plus plus": "C++", "c sharp": "C#"
-};
+const PHRASE_CORRECTIONS = [
+    // Frontend & JS/TS
+    [/\b(we act|re act|reacts|react j s|react js)\b/gi, "React"],
+    [/\b(virtual dorm|virtual don|virtual d o m)\b/gi, "Virtual DOM"],
+    [/\b(d o m)\b/gi, "DOM"],
+    [/\b(you state|used state|use state)\b/gi, "useState"],
+    [/\b(used effect|user fact|use effect)\b/gi, "useEffect"],
+    [/\b(use memo|used memo)\b/gi, "useMemo"],
+    [/\b(use call back|used callback)\b/gi, "useCallback"],
+    [/\b(type script|tight script|typescripts)\b/gi, "TypeScript"],
+    [/\b(java script|javascripts)\b/gi, "JavaScript"],
+    [/\b(view js|vue j s|view j s)\b/gi, "Vue.js"],
+    [/\b(next js|next j s)\b/gi, "Next.js"],
+    [/\b(cs s|c s s)\b/gi, "CSS"],
+    [/\b(ht ml|h t m l)\b/gi, "HTML"],
+    [/\b(tail wind|tailwind c s s)\b/gi, "Tailwind CSS"],
+    [/\b(re ducks|read ux)\b/gi, "Redux"],
+    // Backend & Runtime
+    [/\b(notes js|note js|no js|node j s|know js)\b/gi, "Node.js"],
+    [/\b(even loop|event luke)\b/gi, "Event Loop"],
+    [/\b(express js|express j s)\b/gi, "Express.js"],
+    [/\b(nest js|nest j s)\b/gi, "NestJS"],
+    [/\b(spring boot|spring boat)\b/gi, "Spring Boot"],
+    [/\b(fast a p i|fast api)\b/gi, "FastAPI"],
+    [/\b(rest a p i|rest api|breast api|west api)\b/gi, "REST API"],
+    [/\b(a p i|a p eyes)\b/gi, "API"],
+    [/\b(graph q l|graph ql|giraffe ql)\b/gi, "GraphQL"],
+    [/\b(jason|j son)\b/gi, "JSON"],
+    [/\b(web socket|web sockets|wet socket)\b/gi, "WebSockets"],
+    [/\b(g r p c)\b/gi, "gRPC"],
+    [/\b(a sink|a synchronous)\b/gi, "async"],
+    [/\b(close sure|closures|closure)\b/gi, "closure"],
+    // Databases & Caching
+    [/\b(no sequel|no s q l)\b/gi, "NoSQL"],
+    [/\b(my sequel|my s q l|my sql)\b/gi, "MySQL"],
+    [/\b(post grass|post gress|post gres|postgres q l)\b/gi, "PostgreSQL"],
+    [/\b(s q l|sequel)\b/gi, "SQL"],
+    [/\b(mongo db|mongo tv|mango db)\b/gi, "MongoDB"],
+    [/\b(red is|read is|reddish)\b/gi, "Redis"],
+    [/\b(cash invalidation)\b/gi, "cache invalidation"],
+    [/\b(cashing)\b/gi, "caching"],
+    [/\b(data sharting|sharting)\b/gi, "sharding"],
+    // DevOps, Cloud & Architecture
+    [/\b(cooper net is|cooper netties|kuber netis|cuban it is|k 8 s)\b/gi, "Kubernetes"],
+    [/\b(micro service|micro services)\b/gi, "microservices"],
+    [/\b(sister design|system designed)\b/gi, "system design"],
+    [/\b(low balancer|load balance)\b/gi, "load balancer"],
+    [/\b(great limiter|rate limit)\b/gi, "rate limiter"],
+    [/\b(cap theorem|cat theorem|cab theorem)\b/gi, "CAP theorem"],
+    [/\b(i dem potent|item potent)\b/gi, "idempotent"],
+    [/\b(a w s)\b/gi, "AWS"],
+    [/\b(g c p)\b/gi, "GCP"],
+    [/\b(get hub|git hub)\b/gi, "GitHub"],
+    [/\b(git lab)\b/gi, "GitLab"],
+    [/\b(ci cd|c i c d|see i see d)\b/gi, "CI/CD"],
+    [/\b(jay w t|j w t)\b/gi, "JWT"],
+    [/\b(oh auth|o auth)\b/gi, "OAuth"],
+    [/\b(h t t p s)\b/gi, "HTTPS"],
+    [/\b(h t t p)\b/gi, "HTTP"],
+    [/\b(t c p)\b/gi, "TCP"],
+    [/\b(u d p)\b/gi, "UDP"],
+    [/\b(d n s)\b/gi, "DNS"],
+    [/\b(c d n)\b/gi, "CDN"],
+    // CS & Algorithms
+    [/\b(d s a|b s a)\b/gi, "DSA"],
+    [/\b(big o|big oh)\b/gi, "Big O"],
+    [/\b(lead code|leet code)\b/gi, "LeetCode"],
+    [/\b(object oriented|o o p)\b/gi, "OOP"],
+    [/\b(c plus plus)\b/gi, "C++"],
+    [/\b(c sharp)\b/gi, "C#"],
+    [/\b(dead lock)\b/gi, "deadlock"],
+    [/\b(raise condition)\b/gi, "race condition"]
+];
+
+const NON_QUESTION_CHATTER = new Set([
+    "ok", "okay", "yeah", "yes", "yep", "no", "nope", "right", "sure",
+    "got it", "makes sense", "i see", "thank you", "thanks", "thanks a lot",
+    "uh", "um", "hmm", "hm", "ah", "oh", "well", "so", "like", "you know",
+    "one second", "hold on", "let me think", "can you hear me", "am i audible",
+    "is my screen visible", "good morning", "good afternoon", "good evening",
+    "nice to meet you", "bye", "goodbye"
+]);
+
+const KNOWN_SINGLE_WORD_TOPICS = new Set([
+    "react", "redux", "typescript", "javascript", "node.js", "nodejs", "sql",
+    "nosql", "postgresql", "mongodb", "redis", "kubernetes", "docker",
+    "microservices", "graphql", "websockets", "closure", "closures", "promises",
+    "async", "caching", "sharding", "deadlock", "oop", "dsa", "jwt", "oauth",
+    "css", "html", "flexbox", "rest", "api", "aws", "ci/cd", "weakness", "strengths"
+]);
+
+function cleanSpeechTranscript(rawText = "") {
+    if (!rawText || typeof rawText !== "string") return "";
+    let text = rawText.trim();
+    if (!text) return "";
+
+    // Strip leading conversational filler words from microphone speech
+    text = text.replace(/^(?:(?:um+|uh+|hmm+|er+|ah+|oh+|like|you know|i mean|so yeah|okay so|alright so|well|so|okay|alright)[,\s]+)+/i, "").trim();
+
+    for (const [pattern, replacement] of PHRASE_CORRECTIONS) {
+        text = text.replace(pattern, replacement);
+    }
+
+    // Contextual fix for "cash" -> "cache" when near technical terms
+    if (/\b(redis|database|memory|server|browser|cdn|api|query|data|hit|miss|layer|invalidat|ttl|store|system|design|scale|latency)\b/i.test(text)) {
+        text = text.replace(/\bcash\b/gi, "cache");
+    }
+
+    // Collapse repeated consecutive words often caused by STT stutter ("what is what is" -> "what is")
+    text = text.replace(/\b(\w+)(?:\s+\1\b)+/gi, "$1");
+    text = text.replace(/\s+/g, " ").trim();
+
+    if (text.length > 0) {
+        text = text.charAt(0).toUpperCase() + text.slice(1);
+    }
+    return text;
+}
+
+function isMeaningfulInterviewQuery(cleanedText, fromMic = false) {
+    if (!cleanedText) return false;
+    const norm = cleanedText.toLowerCase().replace(/[^a-z0-9.#+\s/-]/g, "").replace(/\s+/g, " ").trim();
+    if (!norm) return false;
+
+    if (fromMic && NON_QUESTION_CHATTER.has(norm)) {
+        return false;
+    }
+
+    const words = norm.split(" ").filter(Boolean);
+    if (fromMic && words.length < 2 && !KNOWN_SINGLE_WORD_TOPICS.has(words[0])) {
+        return false;
+    }
+    return true;
+}
 
 const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
     const [isListening, setIsListening] = useState(false);
     const [isMuted, setIsMuted] = useState(false);
     const [errorMessage, setErrorMessage] = useState("");
     const [interimText, setInterimText] = useState("");
+    const [lastHeardText, setLastHeardText] = useState("");
     const [manualQuery, setManualQuery] = useState("");
 
     const isMutedRef = useRef(isMuted);
     const isListeningRef = useRef(isListening);
     const silenceTimerRef = useRef(null);
-    const lastProcessedRef = useRef({ text: "", at: 0 });
+    const finalBufferRef = useRef("");
+    const lastProcessedRef = useRef({ text: "", normText: "", at: 0 });
     const recognitionRef = useRef(null);
     const additionalContextRef = useRef(additionalContext);
 
@@ -47,6 +161,7 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
             if (next && silenceTimerRef.current) {
                 clearTimeout(silenceTimerRef.current);
                 silenceTimerRef.current = null;
+                finalBufferRef.current = "";
                 setInterimText("");
             }
             return next;
@@ -76,6 +191,7 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
             clearTimeout(silenceTimerRef.current);
             silenceTimerRef.current = null;
         }
+        finalBufferRef.current = "";
         setInterimText("");
     }, []);
 
@@ -83,14 +199,13 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
         return () => stopSpeechEngine();
     }, [stopSpeechEngine]);
 
-    const handleSend = useCallback((rawText) => {
-        if (!rawText || isMutedRef.current) return;
+    const handleSend = useCallback((rawText, { fromMic = false } = {}) => {
+        if (!rawText || (fromMic && isMutedRef.current)) return;
 
-        let text = rawText.trim();
-        if (!text) return;
-
-        for (const [wrong, right] of Object.entries(CORRECTIONS)) {
-            text = text.replace(new RegExp(`\\b${wrong}\\b`, 'gi'), right);
+        const text = cleanSpeechTranscript(rawText);
+        if (!isMeaningfulInterviewQuery(text, fromMic)) {
+            setInterimText("");
+            return;
         }
 
         const now = Date.now();
@@ -104,7 +219,9 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
         }
 
         lastProcessedRef.current = { text, normText, at: now };
+        finalBufferRef.current = "";
         setInterimText("");
+        setLastHeardText(text);
         onTranscript(text);
 
         socket.emit('question', {
@@ -128,41 +245,48 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
         recognition.continuous = true;
         recognition.interimResults = true;
         recognition.lang = 'en-US';
+        recognition.maxAlternatives = 1;
 
         recognition.onresult = (event) => {
             setErrorMessage("");
             if (isMutedRef.current) return;
 
-            let finalTranscript = '';
+            let finalChunk = '';
             let interimTranscript = '';
 
             for (let i = event.resultIndex; i < event.results.length; ++i) {
                 if (event.results[i].isFinal) {
-                    finalTranscript += event.results[i][0].transcript;
+                    finalChunk += event.results[i][0].transcript + ' ';
                 } else {
                     interimTranscript += event.results[i][0].transcript;
                 }
             }
 
-            setInterimText(interimTranscript || finalTranscript);
-
-            if (finalTranscript) {
-                if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-                handleSend(finalTranscript);
-                return;
+            if (finalChunk.trim()) {
+                finalBufferRef.current = `${finalBufferRef.current} ${finalChunk}`.replace(/\s+/g, ' ').trim();
             }
 
-            if (interimTranscript.trim().length > 0) {
-                if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-                silenceTimerRef.current = setTimeout(() => {
-                    if (!isMutedRef.current) {
-                        handleSend(interimTranscript);
-                        if (recognitionRef.current) {
-                            try { recognitionRef.current.abort(); } catch { /* ignore */ }
-                        }
-                    }
-                }, 2000);
+            const combinedPreview = cleanSpeechTranscript(
+                `${finalBufferRef.current} ${interimTranscript}`.trim()
+            );
+            setInterimText(combinedPreview);
+
+            if (silenceTimerRef.current) {
+                clearTimeout(silenceTimerRef.current);
+                silenceTimerRef.current = null;
             }
+
+            // Wait briefly (850ms after a final clause, or 1750ms after interim speech)
+            // so multi-clause questions aren't cut off mid-sentence.
+            const waitMs = finalBufferRef.current && !interimTranscript.trim() ? 850 : 1750;
+            silenceTimerRef.current = setTimeout(() => {
+                if (isMutedRef.current) return;
+                const toSend = `${finalBufferRef.current} ${interimTranscript}`.replace(/\s+/g, ' ').trim();
+                finalBufferRef.current = "";
+                if (toSend) {
+                    handleSend(toSend, { fromMic: true });
+                }
+            }, waitMs);
         };
 
         recognition.onend = () => {
@@ -297,11 +421,30 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
                 Press <span className="px-1 py-0.5 rounded border text-[11px]" style={{ background: 'var(--surface-2)', borderColor: 'var(--border)' }}>Space</span> to pause/resume
             </p>
 
+            {lastHeardText && (
+                <div
+                    className="mt-2.5 px-2.5 py-1.5 rounded-lg border flex items-center justify-between gap-2 text-[11px]"
+                    style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+                >
+                    <span className="truncate" title={lastHeardText}>
+                        Heard: <strong style={{ color: 'var(--text)' }}>“{lastHeardText}”</strong>
+                    </span>
+                    <button
+                        type="button"
+                        onClick={() => setManualQuery(lastHeardText)}
+                        className="shrink-0 underline hover:opacity-80 font-medium"
+                        style={{ color: 'var(--text)' }}
+                    >
+                        Edit
+                    </button>
+                </div>
+            )}
+
             <form
                 onSubmit={(e) => {
                     e.preventDefault();
                     if (!manualQuery.trim()) return;
-                    handleSend(manualQuery.trim());
+                    handleSend(manualQuery.trim(), { fromMic: false });
                     setManualQuery("");
                 }}
                 className="mt-3 pt-3 border-t flex gap-2"
@@ -311,7 +454,7 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
                     type="text"
                     value={manualQuery}
                     onChange={(e) => setManualQuery(e.target.value)}
-                    placeholder="Or type a question to query RAG / AI…"
+                    placeholder="Or type / edit a question to ask…"
                     className="flex-1 rounded-lg border px-3 py-2 text-xs"
                     style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text)' }}
                 />
