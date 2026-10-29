@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { GoogleGenAI } from '@google/genai';
+import { buildGroundedRAGPrompt } from './rag_engine.js';
 
 // =============================================================================
 // CANONICAL MODELS CONFIGURATION
@@ -7,13 +8,17 @@ import { GoogleGenAI } from '@google/genai';
 
 export const CANONICAL_GEMINI_MODELS = Object.freeze([
     "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro"
+    "gemini-2.5-flash-lite"
 ]);
 
+export const CANONICAL_GEMINI_EMBEDDING_MODELS = Object.freeze(
+    process.env.GEMINI_EMBEDDING_MODEL
+        ? [process.env.GEMINI_EMBEDDING_MODEL, "gemini-embedding-001", "gemini-embedding-2-preview"]
+        : ["gemini-embedding-001", "gemini-embedding-2-preview"]
+);
+
 export const CANONICAL_OPENAI_MODEL = "gpt-4o-mini";
+export const CANONICAL_OPENAI_EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
 
 // =============================================================================
 // KNOWLEDGE BASE (Offline AI Fallback — Tier 3)
@@ -266,6 +271,9 @@ export class AIEngine {
 
         this.fallbackModels = config.fallbackModels || CANONICAL_GEMINI_MODELS;
         this.openAIModel = config.openAIModel || CANONICAL_OPENAI_MODEL;
+        this.geminiEmbeddingModels = config.geminiEmbeddingModels || CANONICAL_GEMINI_EMBEDDING_MODELS;
+        this.openAIEmbeddingModel = config.openAIEmbeddingModel || CANONICAL_OPENAI_EMBEDDING_MODEL;
+        this.embeddingProvider = (config.embeddingProvider || process.env.RAG_EMBEDDING_PROVIDER || 'auto').toLowerCase();
 
         this.deadKeyTTLMs = config.deadKeyTTLMs || (5 * 60 * 1000); // 5 minutes
         this.deadKeyTimestamps = new Map();
@@ -455,7 +463,14 @@ export class AIEngine {
             for (const modelName of this.fallbackModels) {
                 const startTime = Date.now();
                 try {
-                    const ai = new this.GoogleGenAIClass({ apiKey: currentKey });
+                    const ai = new this.GoogleGenAIClass({
+                        apiKey: currentKey,
+                        httpOptions: {
+                            headers: {
+                                'User-Agent': 'aistudio-build',
+                            }
+                        }
+                    });
                     const safetyConfig = [
                         { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
                         { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
@@ -481,7 +496,8 @@ export class AIEngine {
 
                     const callConfig = {
                         safetySettings: safetyConfig,
-                        abortSignal: attemptAbortController.signal
+                        abortSignal: attemptAbortController.signal,
+                        ...(modelName.startsWith('gemini-2.5') ? { thinkingConfig: { thinkingBudget: 0 } } : {})
                     };
 
                     const executeGeneration = async () => {
@@ -673,29 +689,267 @@ export class AIEngine {
     }
 
     /**
+     * Generates genuine semantic embeddings for an array of text strings.
+     * Supports Gemini (gemini-embedding-001 / gemini-embedding-2-preview) and OpenAI (text-embedding-3-small)
+     * with key rotation, batching, and bounded timeouts. Never returns synthetic/random vectors.
+     */
+    async embedTexts(texts = [], options = {}) {
+        const { requestId = 'embed', timeoutMs = null, batchSize = 16 } = options;
+        const effectiveTimeoutMs = timeoutMs || this.requestTimeoutMs || 15000;
+
+        if (!Array.isArray(texts) || texts.length === 0) {
+            throw new Error("EMPTY_EMBEDDING_INPUT: texts must be a non-empty array of strings");
+        }
+
+        const sanitizedTexts = texts.map(t => (typeof t === 'string' ? t.trim() : '')).filter(Boolean);
+        if (sanitizedTexts.length !== texts.length) {
+            throw new Error("INVALID_EMBEDDING_INPUT: All items to embed must be non-empty strings");
+        }
+
+        const tryOpenAIEmbeddings = async () => {
+            if (!this.openaiClient || !this.openaiClient.embeddings) {
+                throw new Error("OPENAI_EMBEDDING_NOT_CONFIGURED");
+            }
+            const allVectors = [];
+            const startTime = Date.now();
+            for (let i = 0; i < sanitizedTexts.length; i += batchSize) {
+                const batch = sanitizedTexts.slice(i, i + batchSize);
+                const res = await withTimeout(
+                    this.openaiClient.embeddings.create({
+                        model: this.openAIEmbeddingModel,
+                        input: batch
+                    }),
+                    effectiveTimeoutMs,
+                    `OPENAI_EMBED_TIMEOUT [${this.openAIEmbeddingModel}]`
+                );
+                const sorted = (res.data || []).sort((a, b) => a.index - b.index);
+                for (const item of sorted) {
+                    if (Array.isArray(item.embedding)) {
+                        allVectors.push(item.embedding);
+                    }
+                }
+            }
+            if (allVectors.length !== sanitizedTexts.length) {
+                throw new Error("OPENAI_EMBEDDING_COUNT_MISMATCH");
+            }
+            logProviderAttempt({
+                requestId, provider: 'openai-embed', model: this.openAIEmbeddingModel,
+                status: 'SUCCESS', durationMs: Date.now() - startTime
+            });
+            return {
+                embeddings: allVectors,
+                provider: 'openai',
+                model: this.openAIEmbeddingModel
+            };
+        };
+
+        const tryGeminiEmbeddings = async () => {
+            if (this.uniqueGeminiKeys.length === 0) {
+                throw new Error("NO_GEMINI_KEYS_CONFIGURED");
+            }
+            const validKeys = this.uniqueGeminiKeys.filter(k => validateGeminiCredentialFormat(k).valid);
+            if (validKeys.length === 0) {
+                throw new Error("GEMINI_CREDENTIAL_FORMAT_INVALID");
+            }
+
+            let lastError = null;
+            for (let loopCount = 0; loopCount < this.uniqueGeminiKeys.length; loopCount++) {
+                const currentKeyIndex = (this.globalKeyIndex + loopCount) % this.uniqueGeminiKeys.length;
+                const currentKey = this.uniqueGeminiKeys[currentKeyIndex];
+                if (!validateGeminiCredentialFormat(currentKey).valid || this.isKeyDead(currentKey)) {
+                    continue;
+                }
+
+                for (const embedModel of this.geminiEmbeddingModels) {
+                    const startTime = Date.now();
+                    try {
+                        const ai = new this.GoogleGenAIClass({
+                            apiKey: currentKey,
+                            httpOptions: {
+                                headers: { 'User-Agent': 'aistudio-build' }
+                            }
+                        });
+
+                        const embedSingleBatch = async (batch) => {
+                            if (ai.models && typeof ai.models.embedContent === 'function') {
+                                const res = await ai.models.embedContent({
+                                    model: embedModel,
+                                    contents: batch
+                                });
+                                const vectors = (res.embeddings || [])
+                                    .map(e => e?.values || e?.embedding || (Array.isArray(e) ? e : null))
+                                    .filter(Array.isArray);
+
+                                if (vectors.length === batch.length) {
+                                    return vectors;
+                                }
+                                // If model treated multi-string contents as 1 multimodal item (e.g. gemini-embedding-2-preview),
+                                // embed each item in the batch individually in parallel
+                                if (batch.length > 1 && vectors.length === 1) {
+                                    const individualResults = await Promise.all(
+                                        batch.map(async (singleText) => {
+                                            const singleRes = await ai.models.embedContent({
+                                                model: embedModel,
+                                                contents: [singleText]
+                                            });
+                                            const v = singleRes.embeddings?.[0]?.values || singleRes.embeddings?.[0]?.embedding;
+                                            if (!Array.isArray(v)) throw new Error("Missing vector in individual embedContent");
+                                            return v;
+                                        })
+                                    );
+                                    return individualResults;
+                                }
+                                throw new Error(`Unexpected embedding count: got ${vectors.length}, expected ${batch.length}`);
+                            } else if (typeof ai.getGenerativeModel === 'function') {
+                                const model = ai.getGenerativeModel({ model: embedModel });
+                                if (typeof model.embedContent !== 'function') {
+                                    throw new Error("Legacy client does not implement embedContent");
+                                }
+                                const results = await Promise.all(
+                                    batch.map(async (singleText) => {
+                                        const r = await model.embedContent(singleText);
+                                        return r?.embedding?.values || r?.embedding;
+                                    })
+                                );
+                                return results;
+                            } else {
+                                throw new Error("Client does not expose models.embedContent");
+                            }
+                        };
+
+                        const allVectors = [];
+                        for (let i = 0; i < sanitizedTexts.length; i += batchSize) {
+                            const batch = sanitizedTexts.slice(i, i + batchSize);
+                            const batchVectors = await withTimeout(
+                                embedSingleBatch(batch),
+                                effectiveTimeoutMs,
+                                `GEMINI_EMBED_TIMEOUT [${embedModel}]`
+                            );
+                            allVectors.push(...batchVectors);
+                        }
+
+                        logProviderAttempt({
+                            requestId, provider: 'gemini-embed', model: embedModel,
+                            keyIndex: currentKeyIndex + 1, totalKeys: this.uniqueGeminiKeys.length,
+                            status: 'SUCCESS', durationMs: Date.now() - startTime
+                        });
+
+                        this.geminiLiveVerified = true;
+                        return {
+                            embeddings: allVectors,
+                            provider: 'gemini',
+                            model: embedModel
+                        };
+                    } catch (err) {
+                        lastError = err;
+                        const classification = classifyError(err);
+                        logProviderAttempt({
+                            requestId, provider: 'gemini-embed', model: embedModel,
+                            keyIndex: currentKeyIndex + 1, totalKeys: this.uniqueGeminiKeys.length,
+                            status: 'FAILED', durationMs: Date.now() - startTime,
+                            errorCategory: classification.category,
+                            errorMessage: err.message
+                        });
+                        if (classification.isPermanent) {
+                            this.markKeyDead(currentKey);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            throw lastError || new Error("GEMINI_EMBEDDING_CASCADE_EXHAUSTED");
+        };
+
+        if (this.embeddingProvider === 'openai') {
+            return await tryOpenAIEmbeddings();
+        }
+        if (this.embeddingProvider === 'gemini') {
+            return await tryGeminiEmbeddings();
+        }
+
+        // 'auto': Prefer Gemini if keys are configured (matches primary 3072-d space), else OpenAI
+        const errors = [];
+        if (this.uniqueGeminiKeys.length > 0) {
+            try {
+                return await tryGeminiEmbeddings();
+            } catch (e) {
+                errors.push(`Gemini: ${e.message}`);
+            }
+        }
+        if (this.openaiClient) {
+            try {
+                return await tryOpenAIEmbeddings();
+            } catch (e) {
+                errors.push(`OpenAI: ${e.message}`);
+            }
+        }
+
+        const err = new Error(`EMBEDDING_CASCADE_FAILED: ${errors.join(' | ') || 'No embedding providers configured'}`);
+        err.code = 'EMBEDDING_PROVIDER_UNAVAILABLE';
+        throw err;
+    }
+
+    /**
      * Unified 3-Tier Provider Flow:
      * Tier 1 (OpenAI) -> Tier 2 (Gemini Cascade) -> Tier 3 (FastEngine Offline)
+     * Preserves RAG retrieved context across provider failovers.
      */
     async generateAnswer(transcript = "", image = null, session = {}, requestId = 'req', streamCallback = null, options = {}) {
-        const { signal = null, timeoutMs = null } = (typeof options === 'object' && options !== null) ? options : {};
+        const { signal = null, timeoutMs = null, ragContext = null } = (typeof options === 'object' && options !== null) ? options : {};
+        const hasRetrievedChunks = Array.isArray(ragContext?.chunks) && ragContext.chunks.length > 0;
+        const ragSources = hasRetrievedChunks ? (ragContext.sources || []) : [];
+
         const diagnostics = {
             tier1_openai: { attempted: false, success: false, error: null, model: this.openAIModel },
             tier2_gemini: { attempted: false, success: false, error: null, model: null },
-            tier3_offline: { attempted: false, success: false, model: 'knowledge_engine' }
+            tier3_offline: { attempted: false, success: false, model: 'knowledge_engine' },
+            rag: {
+                status: ragContext?.status || 'NONE',
+                chunksRetrieved: hasRetrievedChunks ? ragContext.chunks.length : 0,
+                grounded: false
+            }
         };
+
+        const {
+            role = "Software Engineer",
+            company = "Tech Company",
+            tone = "Professional",
+            detailLevel = "Concise"
+        } = session?.settings || {};
+
+        // Build unified prompt (grounded in retrieved RAG chunks if available, else legacy session context)
+        const groundedPrompt = hasRetrievedChunks
+            ? buildGroundedRAGPrompt({
+                question: transcript,
+                retrievedChunks: ragContext.chunks,
+                role,
+                company,
+                tone,
+                detailLevel,
+                hasVisualContext: Boolean(image)
+            })
+            : null;
 
         // --- TIER 1: OpenAI ---
         if (this.openaiClient && !image) {
             diagnostics.tier1_openai.attempted = true;
             const startTime = Date.now();
             try {
+                const messages = groundedPrompt
+                    ? [
+                        { role: "system", content: "You are an expert interview copilot. Follow all grounding and security rules strictly." },
+                        { role: "user", content: groundedPrompt }
+                    ]
+                    : [
+                        { role: "system", content: "You are an expert technical interviewer. Provide a concise answer." },
+                        { role: "user", content: transcript }
+                    ];
+
                 // OpenAI SDK v4 request options (timeout passed as second argument)
                 const completion = await this.openaiClient.chat.completions.create(
                     {
-                        messages: [
-                            { role: "system", content: "You are an expert technical interviewer. Provide a concise answer." },
-                            { role: "user", content: transcript }
-                        ],
+                        messages,
                         model: this.openAIModel
                     },
                     { timeout: 12000 }
@@ -707,9 +961,18 @@ export class AIEngine {
                     status: 'SUCCESS', durationMs
                 });
                 diagnostics.tier1_openai.success = true;
+                diagnostics.rag.grounded = hasRetrievedChunks;
                 this.openAILiveVerified = true;
                 this.openAILastLiveError = null;
-                return { text, provider: 'openai', model: this.openAIModel, isOffline: false, diagnostics };
+                return {
+                    text,
+                    provider: 'openai',
+                    model: this.openAIModel,
+                    isOffline: false,
+                    grounded: hasRetrievedChunks,
+                    ragSources,
+                    diagnostics
+                };
             } catch (err) {
                 const durationMs = Date.now() - startTime;
                 const classification = classifyError(err);
@@ -721,7 +984,7 @@ export class AIEngine {
                     errorMessage: err.message
                 });
                 diagnostics.tier1_openai.error = { category: classification.category, message: err.message };
-                // Recoverable failover to Tier 2
+                // Recoverable failover to Tier 2 (RAG groundedPrompt is preserved!)
             }
         }
 
@@ -729,22 +992,29 @@ export class AIEngine {
         if (this.uniqueGeminiKeys.length > 0) {
             diagnostics.tier2_gemini.attempted = true;
             try {
-                const { role = "Software Engineer", company = "Tech Company" } = session.settings || {};
-                const resumeSnippet = session.resume ? `\nCANDIDATE RESUME: "${session.resume.substring(0, 5000)}"` : "";
-
-                const promptParts = [
-                    `Act as a Senior ${role} interviewing at ${company}. Speak as the candidate. Direct, clear, technical depth.${resumeSnippet}`
-                ];
-
-                if (image) {
-                    const base64Data = image.split(',')[1] || image;
-                    promptParts.push({ inlineData: { data: base64Data, mimeType: "image/jpeg" } });
-                }
-
-                if (transcript) {
-                    promptParts.push(`\nQUESTION / SPEECH: "${transcript}"`);
+                let promptParts;
+                if (groundedPrompt) {
+                    promptParts = [groundedPrompt];
+                    if (image) {
+                        const base64Data = image.split(',')[1] || image;
+                        promptParts.push({ inlineData: { data: base64Data, mimeType: "image/jpeg" } });
+                    }
                 } else {
-                    promptParts.push(`\nQUESTION: Analyze the visual code / diagram from screen.`);
+                    const resumeSnippet = session.resume ? `\nCANDIDATE RESUME: "${session.resume.substring(0, 5000)}"` : "";
+                    promptParts = [
+                        `Act as a Senior ${role} interviewing at ${company}. Speak as the candidate. Direct, clear, technical depth.${resumeSnippet}`
+                    ];
+
+                    if (image) {
+                        const base64Data = image.split(',')[1] || image;
+                        promptParts.push({ inlineData: { data: base64Data, mimeType: "image/jpeg" } });
+                    }
+
+                    if (transcript) {
+                        promptParts.push(`\nQUESTION / SPEECH: "${transcript}"`);
+                    } else {
+                        promptParts.push(`\nQUESTION: Analyze the visual code / diagram from screen.`);
+                    }
                 }
 
                 const result = await this.cascadeGemini(promptParts, { requestId, streamCallback, signal, timeoutMs });
@@ -753,7 +1023,16 @@ export class AIEngine {
 
                 diagnostics.tier2_gemini.success = true;
                 diagnostics.tier2_gemini.model = result.model;
-                return { text, provider: 'gemini', isOffline: false, model: result.model, diagnostics };
+                diagnostics.rag.grounded = hasRetrievedChunks;
+                return {
+                    text,
+                    provider: 'gemini',
+                    isOffline: false,
+                    model: result.model,
+                    grounded: hasRetrievedChunks,
+                    ragSources,
+                    diagnostics
+                };
             } catch (err) {
                 diagnostics.tier2_gemini.error = {
                     category: err.classification?.category || 'CASCADE_EXHAUSTED',
@@ -764,8 +1043,10 @@ export class AIEngine {
         }
 
         // --- TIER 3: Offline Fallback ---
+        // Note: Offline fallback answers are NEVER claimed to be grounded in retrieved documents.
         diagnostics.tier3_offline.attempted = true;
         diagnostics.tier3_offline.success = true;
+        diagnostics.rag.grounded = false;
         const offlineText = FastEngine.generateAnswer(transcript);
         logProviderAttempt({
             requestId, provider: 'offline', model: 'knowledge_engine',
@@ -777,6 +1058,8 @@ export class AIEngine {
             provider: 'offline',
             model: 'knowledge_engine',
             isOffline: true,
+            grounded: false,
+            ragSources: [],
             diagnostics
         };
     }

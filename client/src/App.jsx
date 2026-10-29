@@ -27,9 +27,27 @@ import Toaster from './components/Toaster';
 import { useTheme } from './hooks/useTheme';
 import { loadLocal, STORAGE_KEYS } from './lib/storage';
 
-// Connect to backend (Configurable via VITE_SOCKET_URL, falls back to dev/prod defaults)
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || (import.meta.env.DEV ? "http://localhost:3000" : "https://interview-copilot-aii.onrender.com");
-const API_BASE_URL = SOCKET_URL;
+// Resolve backend URL across Vercel (Render backend), Vite dev (port 5173 -> 3000), and unified same-origin (AI Studio / Render full-stack)
+function resolveBackendUrl() {
+    if (import.meta.env.VITE_SOCKET_URL) {
+        return import.meta.env.VITE_SOCKET_URL.replace(/\/+$/, '');
+    }
+    if (typeof window !== 'undefined') {
+        const { hostname, port, origin } = window.location;
+        if (hostname.endsWith('.vercel.app')) {
+            return 'https://interview-copilot-aii.onrender.com';
+        }
+        if ((hostname === 'localhost' || hostname === '127.0.0.1') && port === '5173') {
+            return 'http://localhost:3000';
+        }
+        return origin;
+    }
+    return 'http://localhost:3000';
+}
+
+const BACKEND_URL = resolveBackendUrl();
+const SOCKET_URL = BACKEND_URL;
+const API_BASE_URL = (typeof window !== 'undefined' && BACKEND_URL === window.location.origin) ? '' : BACKEND_URL;
 const socket = io(SOCKET_URL);
 
 const NAV = [
@@ -53,12 +71,15 @@ function App() {
     const [providerInfo, setProviderInfo] = useState({ hasOpenAI: false, hasGemini: false, isOnline: false });
     const [isLoadingAnswer, setIsLoadingAnswer] = useState(false);
     const [resumeLoaded, setResumeLoaded] = useState(false);
+    const [ragDocuments, setRagDocuments] = useState([]);
+    const [lastRagContext, setLastRagContext] = useState(null);
     const [currentScreenFrame, setCurrentScreenFrame] = useState(null);
     const [theme, setTheme] = useTheme();
 
     const handleTranscriptSent = useCallback((text) => {
         setLastTranscript(text);
         setIsLoadingAnswer(true);
+        setLastRagContext(null);
     }, []);
 
     const openStealthPip = useCallback(async () => {
@@ -96,6 +117,7 @@ function App() {
         const onConnect = () => {
             setConnectionStatus('connected');
             socket.emit('requestSessionState');
+            socket.emit('rag:listDocuments');
             const savedSettings = loadLocal(STORAGE_KEYS.settings, null);
             if (savedSettings) {
                 socket.emit('updateSettings', savedSettings);
@@ -131,6 +153,23 @@ function App() {
 
         const onResumeConfirmed = () => setResumeLoaded(true);
 
+        const onSessionState = (state) => {
+            if (state?.resumeLoaded) setResumeLoaded(true);
+            if (Array.isArray(state?.documents)) {
+                setRagDocuments(state.documents);
+            }
+        };
+
+        const onRagDocumentsList = (docs) => {
+            const list = Array.isArray(docs) ? docs : [];
+            setRagDocuments(list);
+            setResumeLoaded(list.some(d => d.docType === 'resume'));
+        };
+
+        const onRagContextUsed = (ctx) => {
+            setLastRagContext(ctx || null);
+        };
+
         socket.on('connect', onConnect);
         socket.on('disconnect', onDisconnect);
         socket.on('connect_error', onConnectError);
@@ -138,6 +177,9 @@ function App() {
         socket.on('answer', onAnswer);
         socket.on('answerChunk', onAnswerChunk);
         socket.on('resumeConfirmed', onResumeConfirmed);
+        socket.on('sessionStateUpdate', onSessionState);
+        socket.on('rag:documentsList', onRagDocumentsList);
+        socket.on('rag:contextUsed', onRagContextUsed);
 
         return () => {
             socket.off('connect', onConnect);
@@ -147,6 +189,9 @@ function App() {
             socket.off('answer', onAnswer);
             socket.off('answerChunk', onAnswerChunk);
             socket.off('resumeConfirmed', onResumeConfirmed);
+            socket.off('sessionStateUpdate', onSessionState);
+            socket.off('rag:documentsList', onRagDocumentsList);
+            socket.off('rag:contextUsed', onRagContextUsed);
         };
     }, []);
 
@@ -166,6 +211,14 @@ function App() {
         window.addEventListener('keydown', onHotkey);
         return () => window.removeEventListener('keydown', onHotkey);
     }, [isStealth, pipWindow]);
+
+    const handleAnalyzeScreen = useCallback((frameData) => {
+        if (!frameData) return;
+        setLastTranscript("📸 Analyzing shared screen…");
+        setIsLoadingAnswer(true);
+        setLastRagContext(null);
+        socket.emit('analyzeScreen', frameData);
+    }, []);
 
     const copilotView = (
         <div className="flex flex-col lg:flex-row h-full overflow-hidden gap-6 p-6">
@@ -195,11 +248,14 @@ function App() {
                         </span>
                     </div>
                     <p className="text-[13px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-                        Speak or share your screen. Get a clean answer instantly.
+                        Speak, type, or share your screen. Get a clean, document-grounded answer instantly.
                     </p>
                 </div>
 
-                <ScreenWatcher onFrameUpdate={setCurrentScreenFrame} />
+                <ScreenWatcher
+                    onFrameUpdate={setCurrentScreenFrame}
+                    onAnalyzeScreen={handleAnalyzeScreen}
+                />
 
                 <div className="card p-5">
                     <SpeechInput
@@ -227,6 +283,9 @@ function App() {
                     suggestions={suggestions}
                     loading={isLoadingAnswer}
                     onPopOut={openStealthPip}
+                    ragContext={lastRagContext}
+                    documentsCount={ragDocuments.length}
+                    onManageDocs={() => setShowResumeUpload(true)}
                 />
             </div>
         </div>
@@ -240,12 +299,20 @@ function App() {
                     suggestions={suggestions}
                     pipWindow={pipWindow}
                     lastTranscript={lastTranscript}
-                    onClear={() => { setSuggestions(""); setLastTranscript(""); }}
+                    ragContext={lastRagContext}
+                    onClear={() => { setSuggestions(""); setLastTranscript(""); setLastRagContext(null); }}
                     onClose={() => { setIsStealth(false); if (pipWindow) pipWindow.close(); }}
                 />
             )}
             {showSettings && <ToneSettings socket={socket} onClose={() => setShowSettings(false)} />}
-            {showResumeUpload && <ResumeUploader socket={socket} apiBaseUrl={API_BASE_URL} onClose={() => setShowResumeUpload(false)} />}
+            {showResumeUpload && (
+                <ResumeUploader
+                    socket={socket}
+                    apiBaseUrl={API_BASE_URL}
+                    documents={ragDocuments}
+                    onClose={() => setShowResumeUpload(false)}
+                />
+            )}
 
             {!isStealth && (
                 <div className="hidden md:flex w-[240px] shrink-0 flex-col border-r" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
@@ -289,7 +356,7 @@ function App() {
                             <Settings size={16} /> Settings
                         </button>
                         <button onClick={() => setShowResumeUpload(true)} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[13px] hover:opacity-70" style={{ color: 'var(--text-muted)' }}>
-                            <FileText size={16} /> Resume · {resumeLoaded ? 'Ready' : 'Add'}
+                            <FileText size={16} /> Docs & RAG · {ragDocuments.length > 0 ? `${ragDocuments.length} Indexed` : resumeLoaded ? 'Ready' : 'Add'}
                         </button>
                     </div>
                 </div>

@@ -27,6 +27,7 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
     const [isMuted, setIsMuted] = useState(false);
     const [errorMessage, setErrorMessage] = useState("");
     const [interimText, setInterimText] = useState("");
+    const [manualQuery, setManualQuery] = useState("");
 
     const isMutedRef = useRef(isMuted);
     const isListeningRef = useRef(isListening);
@@ -241,7 +242,7 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
     }, [socket, onTranscript]);
 
     return (
-        <div className="card p-4 relative w-full">
+        <div className="relative w-full">
             {errorMessage && (
                 <div className="mb-3 border text-xs font-medium px-3 py-2 rounded-lg" style={{ background: 'rgba(220,38,38,0.08)', borderColor: 'rgba(220,38,38,0.2)', color: '#DC2626' }}>
                     {errorMessage}
@@ -290,6 +291,33 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
             <p className="mt-2 text-[11px] text-center" style={{ color: 'var(--text-faint)' }}>
                 Press <span className="px-1 py-0.5 rounded border text-[11px]" style={{ background: 'var(--surface-2)', borderColor: 'var(--border)' }}>Space</span> to pause/resume
             </p>
+
+            <form
+                onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!manualQuery.trim()) return;
+                    handleSend(manualQuery.trim());
+                    setManualQuery("");
+                }}
+                className="mt-3 pt-3 border-t flex gap-2"
+                style={{ borderColor: 'var(--border)' }}
+            >
+                <input
+                    type="text"
+                    value={manualQuery}
+                    onChange={(e) => setManualQuery(e.target.value)}
+                    placeholder="Or type a question to query RAG / AI…"
+                    className="flex-1 rounded-lg border px-3 py-2 text-xs"
+                    style={{ background: 'var(--surface-2)', borderColor: 'var(--border)', color: 'var(--text)' }}
+                />
+                <button
+                    type="submit"
+                    disabled={!manualQuery.trim()}
+                    className="px-3 py-2 rounded-lg bg-[#0A0A0A] dark:bg-white text-white dark:text-black text-xs font-medium disabled:opacity-40"
+                >
+                    Ask
+                </button>
+            </form>
         </div>
     );
 };

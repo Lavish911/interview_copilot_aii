@@ -2,12 +2,22 @@
   "name": "interview-copilot-aii",
   "version": "1.0.0",
   "type": "module",
+  "workspaces": [
+    "client",
+    "server"
+  ],
   "scripts": {
+    "build:frontend": "npm --prefix client run build",
+    "build": "npm --prefix client run build",
+    "dev": "node server/server.js",
+    "start": "node server/server.js",
+    "lint": "npm --prefix client run lint",
     "test": "node tests/ai_engine.test.js",
     "test:unit": "node tests/ai_engine.test.js",
+    "test:rag": "node tests/rag_engine.test.js",
     "test:isolation": "node tests/isolation_two_client.js",
     "test:system": "node tests/system_verify.js",
-    "test:all": "npm run test:unit && npm run test:isolation"
+    "test:all": "npm run test:unit && npm run test:rag && npm run test:isolation"
   },
   "dependencies": {
     "form-data": "^4.0.5",

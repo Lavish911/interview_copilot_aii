@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CheckCircle2, XCircle, Info } from 'lucide-react';
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const toast = (message, type = 'info') => {
     window.dispatchEvent(new CustomEvent('app-toast', {
         detail: { message, type, id: `${Date.now()}-${Math.random()}` }

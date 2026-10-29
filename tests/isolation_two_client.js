@@ -245,6 +245,22 @@ async function runIsolationSuite() {
             "6b. Client C settings remain completely unaffected by Client B's update"
         );
 
+        // ---------------------------------------------------------------------
+        // Test 7: RAG Document & Vector Store Isolation across sessions
+        // ---------------------------------------------------------------------
+        console.log("\n--- 7. RAG document & semantic retrieval isolation ---");
+        const ragDocsB = await fetch(`${SERVER_URL}/api/rag/documents?sessionId=${encodeURIComponent(clientB.id)}`).then(r => r.json());
+        const ragDocsC = await fetch(`${SERVER_URL}/api/rag/documents?sessionId=${encodeURIComponent(clientC.id)}`).then(r => r.json());
+
+        assert(
+            Array.isArray(ragDocsC.documents) && ragDocsC.documents.length === 0,
+            "7a. Client C has 0 RAG documents in its isolated vector store scope"
+        );
+        assert(
+            Array.isArray(ragDocsB.documents),
+            "7b. Client B RAG document list endpoint responds cleanly for its own session"
+        );
+
         // Cleanup sockets
         clientB.disconnect();
         clientC.disconnect();

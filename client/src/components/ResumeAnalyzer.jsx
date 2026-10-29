@@ -37,12 +37,20 @@ const ResumeAnalyzer = ({ socket, apiBaseUrl, onExit }) => {
         const fd = new FormData();
         fd.append('file', file);
         try {
-            const res = await fetch(`${apiBaseUrl}/api/upload-resume`, { method: 'POST', body: fd });
+            const res = await fetch(`${apiBaseUrl}/api/upload-resume`, {
+                method: 'POST',
+                headers: socket?.id ? { 'x-session-id': socket.id } : {},
+                body: fd,
+            });
             const data = await res.json();
             if (data.success && data.text) {
-                socket.emit('updateResume', data.text);
-                setStatus(`Ready — ${(data.text.length / 1000).toFixed(1)}k chars`);
-                toast('Resume synced to session', 'success');
+                const ragDoc = data.ragDocument || data.document;
+                if (!ragDoc) {
+                    socket.emit('updateResume', data.text);
+                }
+                const chunksMsg = ragDoc?.chunkCount ? ` · ${ragDoc.chunkCount} RAG chunks` : '';
+                setStatus(`Ready — ${(data.text.length / 1000).toFixed(1)}k chars${chunksMsg}`);
+                toast('Resume synced & indexed into RAG session', 'success');
             } else {
                 setStatus(data.error || 'Failed');
                 toast('Upload failed', 'error');

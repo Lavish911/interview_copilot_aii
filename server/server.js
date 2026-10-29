@@ -8,29 +8,58 @@ import multer from 'multer';
 import mammoth from 'mammoth';
 import { createRequire } from "module";
 import crypto from 'crypto';
+import fs from 'fs';
+import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { AIEngine, FastEngine, classifyError, getOpaqueKeyLabel, validateGeminiCredentialFormat, validateOpenAICredentialFormat, logProviderAttempt } from './ai_engine.js';
+import { RAGEngine, normalizeDocumentText } from './rag_engine.js';
 
 const require = createRequire(import.meta.url);
 const pdfParseModule = require("pdf-parse");
 
-async function extractPdfText(buffer) {
+async function extractPdfDocument(buffer) {
+    if (!buffer || buffer.length === 0) {
+        throw new Error('EMPTY_FILE: Uploaded PDF file is empty');
+    }
     if (typeof pdfParseModule === 'function') {
         const data = await pdfParseModule(buffer);
-        return data?.text || '';
+        return {
+            text: data?.text || '',
+            pageCount: data?.numpages || null,
+            pages: null
+        };
     }
     if (pdfParseModule && typeof pdfParseModule.PDFParse === 'function') {
         const parser = new pdfParseModule.PDFParse({ data: buffer });
         const result = await parser.getText();
         if (typeof parser.destroy === 'function') await parser.destroy();
-        return result?.text || '';
+        const pages = Array.isArray(result?.pages)
+            ? result.pages.map((p, idx) => ({
+                pageNumber: p.num || idx + 1,
+                text: p.text || ''
+            }))
+            : null;
+        return {
+            text: result?.text || '',
+            pageCount: result?.total || (pages ? pages.length : null),
+            pages
+        };
     }
     if (typeof pdfParseModule?.default === 'function') {
         const data = await pdfParseModule.default(buffer);
-        return data?.text || '';
+        return {
+            text: data?.text || '',
+            pageCount: data?.numpages || null,
+            pages: null
+        };
     }
     throw new Error('Unsupported pdf-parse export format');
+}
+
+async function extractPdfText(buffer) {
+    const doc = await extractPdfDocument(buffer);
+    return doc.text || '';
 }
 
 async function cascadeVisionContent(buffer, mimeType, requestId = 'ocr') {
@@ -47,6 +76,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 dotenv.config({ path: path.resolve(__dirname, '.env') });
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 // =============================================================================
 // CONFIGURATION & VALIDATION
@@ -67,6 +97,21 @@ const DEFAULT_ORIGINS = [
 ];
 
 const ALL_ORIGINS = [...new Set([...DEFAULT_ORIGINS, ...ALLOWED_ORIGINS])];
+
+function isOriginAllowed(origin) {
+    if (!origin) return true;
+    if (ALL_ORIGINS.includes(origin)) return true;
+    if (
+        origin.endsWith('.vercel.app') ||
+        origin.endsWith('.onrender.com') ||
+        origin.endsWith('.run.app') ||
+        origin.endsWith('.aistudio.google.com') ||
+        origin.endsWith('.googleusercontent.com')
+    ) {
+        return true;
+    }
+    return false;
+}
 
 // --- Environment Variable Validation ---
 function validateConfig() {
@@ -118,10 +163,14 @@ for (let i = 1; i <= 20; i++) {
 }
 const UNIQUE_KEYS = [...new Set(GEMINI_KEYS)];
 
-// Instantiate Unified AI Engine
+// Instantiate Unified AI Engine & Multi-Tenant RAG Engine
 export const aiEngine = new AIEngine({
     openAIKey: process.env.OPENAI_KEY,
     geminiKeys: UNIQUE_KEYS
+});
+
+export const ragEngine = new RAGEngine({
+    aiEngine
 });
 
 // =============================================================================
@@ -137,12 +186,12 @@ app.use(helmet({
 
 app.use(cors({
     origin: function (origin, callback) {
-        if (!origin) return callback(null, true);
-        if (ALL_ORIGINS.includes(origin)) return callback(null, true);
+        if (isOriginAllowed(origin)) return callback(null, true);
         console.warn(`CORS blocked origin: ${origin}`);
         callback(new Error('CORS policy violation'));
     },
-    methods: ['GET', 'POST'],
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'x-session-id', 'Authorization'],
     credentials: false
 }));
 
@@ -156,11 +205,13 @@ const upload = multer({
             'application/pdf',
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             'text/plain',
+            'text/markdown',
             'image/jpeg',
             'image/png',
             'image/webp'
         ];
-        if (allowedMimes.includes(file.mimetype)) {
+        const ext = path.extname(file.originalname || '').toLowerCase();
+        if (allowedMimes.includes(file.mimetype) || (file.mimetype === 'application/octet-stream' && ['.md', '.txt'].includes(ext))) {
             cb(null, true);
         } else {
             cb(new Error(`Unsupported file type: ${file.mimetype}`));
@@ -176,7 +227,10 @@ const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
     cors: {
-        origin: ALL_ORIGINS,
+        origin: function (origin, callback) {
+            if (isOriginAllowed(origin)) return callback(null, true);
+            callback(new Error('CORS policy violation'));
+        },
         methods: ["GET", "POST"]
     },
     maxHttpBufferSize: 5 * 1024 * 1024,
@@ -210,6 +264,7 @@ function getSession(socketId) {
 
 function destroySession(socketId) {
     sessions.delete(socketId);
+    ragEngine.clearOwnerScope(socketId);
 }
 
 // =============================================================================
@@ -231,7 +286,8 @@ const OPERATION_LIMITS = {
     submitMockAnswer: { cooldownMs: 2000, maxConcurrent: 1 },
     analyzeResume: { cooldownMs: 4000, maxConcurrent: 1 },
     generateCoverLetter: { cooldownMs: 5000, maxConcurrent: 1 },
-    predictQuestions: { cooldownMs: 4000, maxConcurrent: 1 }
+    predictQuestions: { cooldownMs: 4000, maxConcurrent: 1 },
+    ragIngest: { cooldownMs: 1500, maxConcurrent: 2 }
 };
 
 function getClientIp(socketOrReq) {
@@ -339,9 +395,7 @@ setInterval(() => {
 // HEALTH & READINESS ENDPOINTS
 // =============================================================================
 
-app.get('/', (req, res) => {
-    res.send('Interview Copilot AI Server is running.');
-});
+// Root route handled by static frontend middleware below
 
 app.get('/health', (req, res) => {
     const health = aiEngine.getProviderHealth();
@@ -436,10 +490,12 @@ io.on('connection', (socket) => {
 
     // Initial state sync with settings isolation
     socket.on('requestSessionState', () => {
+        const docs = ragEngine.listDocuments(socket.id);
         socket.emit('sessionStateUpdate', {
             analysis: session.analysis,
             coverLetter: session.coverLetter,
-            resumeLoaded: !!session.resume,
+            resumeLoaded: !!session.resume || docs.some(d => d.docType === 'resume'),
+            documents: docs,
             settings: {
                 role: session.settings.role,
                 company: session.settings.company,
@@ -447,7 +503,8 @@ io.on('connection', (socket) => {
                 detailLevel: session.settings.detailLevel
             }
         });
-        if (session.resume) {
+        socket.emit('rag:documentsList', docs);
+        if (session.resume || docs.some(d => d.docType === 'resume')) {
             socket.emit('resumeConfirmed', "Resume received and analyzed.");
         }
         emitProviderStatus(socket);
@@ -462,13 +519,124 @@ io.on('connection', (socket) => {
         cleanupSocketLimits(socket.id);
     });
 
-    socket.on('updateResume', (resumeText) => {
+    socket.on('updateResume', async (resumeText) => {
         if (typeof resumeText !== 'string' || resumeText.length > 50000) {
             socket.emit('error', 'Resume text too long (max 50,000 characters)');
             return;
         }
         session.resume = resumeText;
         socket.emit('resumeConfirmed', "Resume received and analyzed.");
+
+        // Automatically index resume into the session's RAG vector store if non-trivial
+        if (resumeText.trim().length >= 15) {
+            try {
+                socket.emit('rag:documentStatus', { status: 'indexing', filename: 'Candidate_Resume.txt', docType: 'resume' });
+                const docMeta = await ragEngine.ingestDocument({
+                    ownerId: socket.id,
+                    filename: 'Candidate_Resume.txt',
+                    docType: 'resume',
+                    mimeType: 'text/plain',
+                    text: resumeText,
+                    replaceExistingType: true,
+                    requestId: `resume-${crypto.randomBytes(3).toString('hex')}`
+                });
+                socket.emit('rag:documentStatus', { status: 'indexed', document: docMeta });
+                socket.emit('rag:documentsList', ragEngine.listDocuments(socket.id));
+            } catch (err) {
+                socket.emit('rag:documentStatus', {
+                    status: 'error',
+                    filename: 'Candidate_Resume.txt',
+                    code: err.code || 'INDEX_FAILED',
+                    error: err.message
+                });
+            }
+        }
+    });
+
+    // RAG DOCUMENT MANAGEMENT SOCKET EVENTS
+    socket.on('rag:listDocuments', () => {
+        socket.emit('rag:documentsList', ragEngine.listDocuments(socket.id));
+    });
+
+    socket.on('rag:uploadDocument', async (payload) => {
+        const requestId = crypto.randomBytes(4).toString('hex');
+        if (!payload || typeof payload !== 'object') {
+            socket.emit('rag:documentStatus', { status: 'error', error: 'Invalid document payload.' });
+            return;
+        }
+
+        const rateCheck = checkRateLimit(socket, 'ragIngest');
+        if (!rateCheck.allowed) {
+            socket.emit('rateLimited', { reason: rateCheck.reason, message: rateCheck.message });
+            socket.emit('rag:documentStatus', { status: 'error', error: rateCheck.message });
+            return;
+        }
+
+        try {
+            const filename = typeof payload.filename === 'string' ? payload.filename : 'document.txt';
+            const docType = typeof payload.docType === 'string' ? payload.docType : 'general';
+            const text = typeof payload.text === 'string' ? payload.text : '';
+            const pages = Array.isArray(payload.pages) ? payload.pages : null;
+            const pageCount = payload.pageCount || null;
+
+            socket.emit('rag:documentStatus', { status: 'indexing', filename, docType });
+
+            const docMeta = await ragEngine.ingestDocument({
+                ownerId: socket.id,
+                filename,
+                docType,
+                mimeType: payload.mimeType || 'text/plain',
+                text,
+                pages,
+                pageCount,
+                replaceExistingType: Boolean(payload.replaceExistingType),
+                requestId
+            });
+
+            if (docType === 'resume' && text.trim().length > 0) {
+                session.resume = text.slice(0, 50000);
+                socket.emit('resumeConfirmed', "Resume received and analyzed.");
+            }
+
+            socket.emit('rag:documentStatus', { status: 'indexed', document: docMeta });
+            socket.emit('rag:documentsList', ragEngine.listDocuments(socket.id));
+        } catch (err) {
+            socket.emit('rag:documentStatus', {
+                status: 'error',
+                code: err.code || 'INGEST_ERROR',
+                error: err.message
+            });
+        } finally {
+            releaseRateLimit(socket.id, 'ragIngest');
+        }
+    });
+
+    socket.on('rag:deleteDocument', (payload) => {
+        const docId = typeof payload === 'string' ? payload : payload?.docId;
+        if (!docId || typeof docId !== 'string') {
+            socket.emit('rag:documentStatus', { status: 'error', error: 'Missing document ID.' });
+            return;
+        }
+        const deleted = ragEngine.deleteDocument(socket.id, docId);
+        const remainingDocs = ragEngine.listDocuments(socket.id);
+        if (!remainingDocs.some(d => d.docType === 'resume')) {
+            session.resume = "";
+        }
+        socket.emit('rag:documentDeleted', { docId, deleted });
+        socket.emit('rag:documentsList', remainingDocs);
+    });
+
+    socket.on('rag:reindexDocument', async (payload) => {
+        const docId = typeof payload === 'string' ? payload : payload?.docId;
+        if (!docId || typeof docId !== 'string') return;
+        try {
+            socket.emit('rag:documentStatus', { status: 'indexing', docId });
+            const updated = await ragEngine.reindexDocument(socket.id, docId);
+            socket.emit('rag:documentStatus', { status: 'indexed', document: updated });
+            socket.emit('rag:documentsList', ragEngine.listDocuments(socket.id));
+        } catch (err) {
+            socket.emit('rag:documentStatus', { status: 'error', docId, error: err.message });
+        }
     });
 
     socket.on('updateSettings', (newSettings) => {
@@ -482,7 +650,7 @@ io.on('connection', (socket) => {
         socket.emit('settingsConfirmed', "Context updated.");
     });
 
-    // MAIN QUESTION HANDLER
+    // MAIN QUESTION HANDLER (WITH GENUINE RAG RETRIEVAL)
     socket.on('question', async (data) => {
         const requestId = crypto.randomBytes(4).toString('hex');
 
@@ -500,11 +668,15 @@ io.on('connection', (socket) => {
         try {
             let transcript = "";
             let image = null;
+            let topK = undefined;
+            let docIds = undefined;
             if (typeof data === 'string') {
                 transcript = data;
             } else if (typeof data === 'object' && data !== null) {
                 transcript = typeof data.transcript === 'string' ? data.transcript : "";
                 image = typeof data.image === 'string' ? data.image : null;
+                topK = data.topK;
+                docIds = data.docIds;
             }
 
             if (transcript.trim().length === 0 && !image) return;
@@ -514,6 +686,28 @@ io.on('connection', (socket) => {
 
             socket.emit('answerChunk', { chunk: "🔄 *Analyzing question...*\n\n", isFirst: true });
 
+            // Perform semantic RAG retrieval over the socket owner's indexed documents
+            let ragContext = null;
+            const ownerDocs = ragEngine.listDocuments(socket.id);
+            if (ownerDocs.length > 0 && transcript.trim().length > 0) {
+                try {
+                    ragContext = await ragEngine.retrieveContext(socket.id, transcript, {
+                        requestId: `${requestId}-rag`,
+                        topK,
+                        docIds
+                    });
+                } catch (ragErr) {
+                    console.warn(`[${requestId}] ⚠️ RAG retrieval error: ${ragErr.message}`);
+                    ragContext = {
+                        status: 'EMBEDDING_ERROR',
+                        error: ragErr.message,
+                        chunks: [],
+                        sources: [],
+                        totalIndexedChunks: 0
+                    };
+                }
+            }
+
             const result = await aiEngine.generateAnswer(
                 transcript, image, session, requestId,
                 (chunkText, isFirst) => {
@@ -522,10 +716,23 @@ io.on('connection', (socket) => {
                     }
                     socket.emit('answerChunk', { chunk: chunkText, isFirst });
                 },
-                { signal: abortController.signal }
+                { signal: abortController.signal, ragContext }
             );
 
             if (!abortController.signal.aborted) {
+                const isGrounded = Boolean(!result.isOffline && result.grounded);
+                socket.emit('rag:contextUsed', {
+                    grounded: isGrounded,
+                    status: result.isOffline
+                        ? 'OFFLINE_FALLBACK'
+                        : (ragContext?.status || 'NO_DOCUMENTS'),
+                    sources: isGrounded ? (result.ragSources || []) : [],
+                    totalIndexedChunks: ragContext?.totalIndexedChunks || 0,
+                    embeddingModel: ragContext?.queryEmbeddingModel || null,
+                    provider: result.provider,
+                    model: result.model
+                });
+
                 if (result.isOffline) {
                     socket.emit('answer', `📴 **Offline Mode**\nNo AI provider is currently available. Using built-in knowledge base.\n\n${result.text}`);
                 } else {
@@ -538,6 +745,12 @@ io.on('connection', (socket) => {
                 console.error(`[${requestId}] ❌ AI Error:`, error.message);
                 const transcript_fallback = typeof data === 'string' ? data : data?.transcript || '';
                 const offlineAnswer = FastEngine.generateAnswer(transcript_fallback);
+                socket.emit('rag:contextUsed', {
+                    grounded: false,
+                    status: 'OFFLINE_FALLBACK',
+                    sources: [],
+                    totalIndexedChunks: 0
+                });
                 socket.emit('answer', `📴 **Offline Mode**\nAI providers temporarily unavailable. Using built-in knowledge base.\n\n${offlineAnswer}`);
             }
         } finally {
@@ -856,6 +1069,84 @@ const uploadFields = upload.fields([
     { name: 'resume', maxCount: 1 }
 ]);
 
+async function extractUploadedFileContent(file, requestId = 'upload') {
+    if (!file || !file.buffer || file.size === 0) {
+        const err = new Error('Uploaded file is empty (0 bytes).');
+        err.statusCode = 400;
+        err.code = 'EMPTY_FILE';
+        throw err;
+    }
+
+    const mimeType = file.mimetype;
+    let text = '';
+    let pageCount = null;
+    let pages = null;
+
+    if (mimeType === 'application/pdf') {
+        try {
+            const pdfData = await extractPdfDocument(file.buffer);
+            text = pdfData.text || '';
+            pageCount = pdfData.pageCount;
+            pages = pdfData.pages;
+            if (text.trim().length < 20) throw new Error('Scanned or empty PDF detected');
+        } catch (e) {
+            // Try Gemini vision OCR only if buffer looks like a valid PDF header (%PDF-)
+            const header = file.buffer.slice(0, 5).toString('utf8');
+            if (!header.startsWith('%PDF-')) {
+                const corruptErr = new Error('Corrupted or invalid PDF file.');
+                corruptErr.statusCode = 422;
+                corruptErr.code = 'CORRUPTED_FILE';
+                throw corruptErr;
+            }
+            try {
+                text = await cascadeVisionContent(file.buffer, 'application/pdf', requestId);
+            } catch {
+                const ocrErr = new Error('PDF text extraction failed and Vision OCR unavailable.');
+                ocrErr.statusCode = 422;
+                ocrErr.code = 'EXTRACTION_FAILED';
+                throw ocrErr;
+            }
+        }
+    } else if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+        try {
+            const result = await mammoth.extractRawText({ buffer: file.buffer });
+            text = result.value || '';
+        } catch {
+            const docxErr = new Error('Corrupted or unreadable DOCX file.');
+            docxErr.statusCode = 422;
+            docxErr.code = 'CORRUPTED_FILE';
+            throw docxErr;
+        }
+    } else if (mimeType.startsWith('image/')) {
+        text = await cascadeVisionContent(file.buffer, mimeType, requestId);
+    } else {
+        text = file.buffer.toString('utf8');
+    }
+
+    const normalized = normalizeDocumentText(text);
+    if (!normalized) {
+        const emptyErr = new Error('No readable text could be extracted from the file.');
+        emptyErr.statusCode = 422;
+        emptyErr.code = 'EMPTY_DOCUMENT';
+        throw emptyErr;
+    }
+
+    return {
+        text: normalized,
+        flatText: normalized.replace(/\n+/g, ' ').trim(),
+        pageCount,
+        pages
+    };
+}
+
+function resolveOwnerSessionId(req) {
+    const rawId = req.headers['x-session-id'] || req.body?.sessionId || req.query?.sessionId;
+    if (typeof rawId === 'string' && rawId.trim().length > 0 && rawId.trim().length <= 128) {
+        return rawId.trim();
+    }
+    return null;
+}
+
 app.post('/api/upload-resume', (req, res, next) => {
     const rateCheck = checkHttpUploadRateLimit(req);
     if (!rateCheck.allowed) {
@@ -877,40 +1168,368 @@ app.post('/api/upload-resume', (req, res, next) => {
     try {
         if (!req.file) return res.status(400).json({ success: false, status: 'error', error: 'No file uploaded.' });
 
-        let text = "";
         const mimeType = req.file.mimetype;
-
         console.log(`[${requestId}] 📁 Upload: ${mimeType} (${(req.file.size / 1024).toFixed(1)}KB)`);
 
-        if (mimeType === 'application/pdf') {
+        const extracted = await extractUploadedFileContent(req.file, requestId);
+        console.log(`[${requestId}] ✅ Resume parsed: ${extracted.flatText.length} chars`);
+
+        // If client provided a sessionId, also index into RAG engine with page/section metadata
+        const ownerId = resolveOwnerSessionId(req);
+        let ragDocument = null;
+        let ragError = null;
+        if (ownerId) {
             try {
-                text = await extractPdfText(req.file.buffer);
-                if (text.trim().length < 50) throw new Error("Scanned PDF detected");
-            } catch (e) {
-                // Try Gemini vision OCR
-                try {
-                    text = await cascadeVisionContent(req.file.buffer, 'application/pdf', requestId);
-                } catch (ocrErr) {
-                    throw new Error("PDF text extraction failed and Vision OCR unavailable");
+                ragDocument = await ragEngine.ingestDocument({
+                    ownerId,
+                    filename: req.file.originalname || 'Resume.pdf',
+                    docType: req.body?.docType || 'resume',
+                    mimeType,
+                    text: extracted.text,
+                    pages: extracted.pages,
+                    pageCount: extracted.pageCount,
+                    replaceExistingType: (req.body?.docType || 'resume') === 'resume',
+                    requestId
+                });
+                if (sessions.has(ownerId) && (req.body?.docType || 'resume') === 'resume') {
+                    sessions.get(ownerId).resume = extracted.text.slice(0, 50000);
                 }
+                const targetSocket = io.sockets.sockets.get(ownerId);
+                if (targetSocket) {
+                    targetSocket.emit('rag:documentsList', ragEngine.listDocuments(ownerId));
+                }
+            } catch (e) {
+                ragError = e.message;
             }
-        } else if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
-            const result = await mammoth.extractRawText({ buffer: req.file.buffer });
-            text = result.value;
-        } else if (mimeType.startsWith('image/')) {
-            text = await cascadeVisionContent(req.file.buffer, mimeType, requestId);
-        } else {
-            text = req.file.buffer.toString('utf8');
         }
 
-        text = text.replace(/\n+/g, " ").trim();
-        console.log(`[${requestId}] ✅ Resume parsed: ${text.length} chars`);
-
-        res.json({ success: true, status: 'success', length: text.length, text: text });
+        res.json({
+            success: true,
+            status: 'success',
+            length: extracted.flatText.length,
+            text: extracted.flatText,
+            structuredText: extracted.text,
+            pageCount: extracted.pageCount,
+            ragDocument,
+            ragError
+        });
     } catch (err) {
         console.error(`[${requestId}] Upload error:`, err.message);
-        res.status(500).json({ success: false, status: 'error', error: 'Failed to process file. Please try a different format.' });
+        const status = err.statusCode || 500;
+        res.status(status).json({
+            success: false,
+            status: 'error',
+            code: err.code || 'UPLOAD_ERROR',
+            error: status < 500 ? err.message : 'Failed to process file. Please try a different format.'
+        });
     }
+});
+
+// =============================================================================
+// RAG DOCUMENT MANAGEMENT & RETRIEVAL REST ENDPOINTS
+// =============================================================================
+
+app.post('/api/rag/documents', (req, res, next) => {
+    const rateCheck = checkHttpUploadRateLimit(req);
+    if (!rateCheck.allowed) {
+        return res.status(429).json({
+            success: false,
+            error: `Too many upload requests. Please retry in ${rateCheck.retryAfter} seconds.`
+        });
+    }
+    const contentType = req.headers['content-type'] || '';
+    if (contentType.includes('multipart/form-data')) {
+        uploadFields(req, res, (err) => {
+            if (err) return next(err);
+            req.file = (req.files && (req.files['file']?.[0] || req.files['resume']?.[0])) || req.file;
+            next();
+        });
+    } else {
+        next();
+    }
+}, async (req, res) => {
+    const requestId = crypto.randomBytes(4).toString('hex');
+    try {
+        const ownerId = resolveOwnerSessionId(req);
+        if (!ownerId) {
+            return res.status(400).json({
+                success: false,
+                code: 'MISSING_SESSION_ID',
+                error: 'A valid sessionId (via x-session-id header or body) is required for document ownership isolation.'
+            });
+        }
+
+        const docType = req.body?.docType || 'general';
+        let filename = req.body?.filename || 'document.txt';
+        let mimeType = 'text/plain';
+        let text = '';
+        let pages = null;
+        let pageCount = null;
+
+        if (req.file) {
+            filename = req.file.originalname || filename;
+            mimeType = req.file.mimetype;
+            const extracted = await extractUploadedFileContent(req.file, requestId);
+            text = extracted.text;
+            pages = extracted.pages;
+            pageCount = extracted.pageCount;
+        } else if (typeof req.body?.text === 'string') {
+            text = req.body.text;
+            pages = Array.isArray(req.body.pages) ? req.body.pages : null;
+            pageCount = req.body.pageCount || null;
+        } else {
+            return res.status(400).json({
+                success: false,
+                code: 'MISSING_DOCUMENT_CONTENT',
+                error: 'Provide either a file upload or a non-empty text field.'
+            });
+        }
+
+        const document = await ragEngine.ingestDocument({
+            ownerId,
+            filename,
+            docType,
+            mimeType,
+            text,
+            pages,
+            pageCount,
+            replaceExistingType: Boolean(req.body?.replaceExistingType),
+            requestId
+        });
+
+        if (docType === 'resume' && sessions.has(ownerId)) {
+            sessions.get(ownerId).resume = text.slice(0, 50000);
+        }
+
+        const targetSocket = io.sockets.sockets.get(ownerId);
+        if (targetSocket) {
+            targetSocket.emit('rag:documentStatus', { status: 'indexed', document });
+            targetSocket.emit('rag:documentsList', ragEngine.listDocuments(ownerId));
+            if (docType === 'resume') {
+                targetSocket.emit('resumeConfirmed', "Resume received and analyzed.");
+            }
+        }
+
+        res.status(201).json({
+            success: true,
+            document,
+            documents: ragEngine.listDocuments(ownerId)
+        });
+    } catch (err) {
+        const status = err.statusCode || (err.code === 'EMPTY_DOCUMENT' || err.code === 'EMPTY_CHUNKS' ? 400 : err.code === 'EMBEDDING_PROVIDER_UNAVAILABLE' ? 503 : 500);
+        res.status(status).json({
+            success: false,
+            code: err.code || 'RAG_INGEST_FAILED',
+            error: err.message
+        });
+    }
+});
+
+app.get('/api/rag/documents', (req, res) => {
+    const ownerId = resolveOwnerSessionId(req);
+    if (!ownerId) {
+        return res.status(400).json({
+            success: false,
+            code: 'MISSING_SESSION_ID',
+            error: 'sessionId is required to list session documents.'
+        });
+    }
+    res.json({
+        success: true,
+        documents: ragEngine.listDocuments(ownerId)
+    });
+});
+
+app.delete('/api/rag/documents/:docId', (req, res) => {
+    const ownerId = resolveOwnerSessionId(req);
+    if (!ownerId) {
+        return res.status(400).json({
+            success: false,
+            code: 'MISSING_SESSION_ID',
+            error: 'sessionId is required to delete a document.'
+        });
+    }
+    const { docId } = req.params;
+    const deleted = ragEngine.deleteDocument(ownerId, docId);
+    if (!deleted) {
+        return res.status(404).json({
+            success: false,
+            code: 'DOCUMENT_NOT_FOUND',
+            error: 'Document not found or not owned by this session.'
+        });
+    }
+
+    const remainingDocs = ragEngine.listDocuments(ownerId);
+    if (sessions.has(ownerId) && !remainingDocs.some(d => d.docType === 'resume')) {
+        sessions.get(ownerId).resume = "";
+    }
+
+    const targetSocket = io.sockets.sockets.get(ownerId);
+    if (targetSocket) {
+        targetSocket.emit('rag:documentDeleted', { docId, deleted: true });
+        targetSocket.emit('rag:documentsList', remainingDocs);
+    }
+
+    res.json({
+        success: true,
+        docId,
+        deleted: true,
+        documents: remainingDocs
+    });
+});
+
+app.post('/api/rag/documents/:docId/reindex', async (req, res) => {
+    const ownerId = resolveOwnerSessionId(req);
+    if (!ownerId) {
+        return res.status(400).json({
+            success: false,
+            code: 'MISSING_SESSION_ID',
+            error: 'sessionId is required to re-index a document.'
+        });
+    }
+    try {
+        const document = await ragEngine.reindexDocument(ownerId, req.params.docId);
+        const targetSocket = io.sockets.sockets.get(ownerId);
+        if (targetSocket) {
+            targetSocket.emit('rag:documentStatus', { status: 'indexed', document });
+            targetSocket.emit('rag:documentsList', ragEngine.listDocuments(ownerId));
+        }
+        res.json({
+            success: true,
+            document,
+            documents: ragEngine.listDocuments(ownerId)
+        });
+    } catch (err) {
+        const status = err.code === 'DOCUMENT_NOT_FOUND' ? 404 : 500;
+        res.status(status).json({
+            success: false,
+            code: err.code || 'REINDEX_FAILED',
+            error: err.message
+        });
+    }
+});
+
+app.post('/api/rag/query', async (req, res) => {
+    const requestId = crypto.randomBytes(4).toString('hex');
+    const ownerId = resolveOwnerSessionId(req);
+    if (!ownerId) {
+        return res.status(400).json({
+            success: false,
+            code: 'MISSING_SESSION_ID',
+            error: 'sessionId is required to query session documents.'
+        });
+    }
+    const question = typeof req.body?.question === 'string' ? req.body.question.trim() : '';
+    if (!question) {
+        return res.status(400).json({
+            success: false,
+            code: 'EMPTY_QUESTION',
+            error: 'A non-empty question is required.'
+        });
+    }
+
+    try {
+        const ragContext = await ragEngine.retrieveContext(ownerId, question.slice(0, 5000), {
+            requestId,
+            topK: req.body?.topK,
+            minScore: req.body?.minScore,
+            docIds: req.body?.docIds,
+            docType: req.body?.docType
+        });
+
+        if (req.body?.retrieveOnly) {
+            return res.json({
+                success: true,
+                retrievalStatus: ragContext.status,
+                grounded: ragContext.chunks.length > 0,
+                sources: ragContext.sources,
+                totalIndexedChunks: ragContext.totalIndexedChunks
+            });
+        }
+
+        const session = sessions.get(ownerId) || { settings: {} };
+        const answerResult = await aiEngine.generateAnswer(
+            question.slice(0, 5000),
+            null,
+            session,
+            requestId,
+            null,
+            { ragContext }
+        );
+
+        res.json({
+            success: true,
+            retrievalStatus: answerResult.isOffline ? 'OFFLINE_FALLBACK' : ragContext.status,
+            grounded: Boolean(!answerResult.isOffline && answerResult.grounded),
+            answer: answerResult.text,
+            sources: !answerResult.isOffline && answerResult.grounded ? answerResult.ragSources : [],
+            provider: answerResult.provider,
+            model: answerResult.model,
+            isOffline: answerResult.isOffline
+        });
+    } catch (err) {
+        res.status(err.code === 'EMBEDDING_PROVIDER_UNAVAILABLE' ? 503 : 500).json({
+            success: false,
+            code: err.code || 'RAG_QUERY_FAILED',
+            error: err.message
+        });
+    }
+});
+
+// =============================================================================
+// STATIC FRONTEND & SPA FALLBACK
+// =============================================================================
+
+const clientDir = path.resolve(__dirname, '../client');
+const clientDistPath = path.resolve(clientDir, 'dist');
+const clientIndexHtml = path.join(clientDistPath, 'index.html');
+
+let clientBuildPromise = null;
+function ensureClientBuild() {
+    if (fs.existsSync(clientIndexHtml)) {
+        return Promise.resolve(true);
+    }
+    if (clientBuildPromise) {
+        return clientBuildPromise;
+    }
+    console.log('⚙️ [Startup] Building client/dist in background...');
+    clientBuildPromise = new Promise((resolve) => {
+        const child = spawn('npm', ['--prefix', clientDir, 'run', 'build'], {
+            stdio: 'inherit',
+            env: process.env
+        });
+        child.on('close', (code) => {
+            clientBuildPromise = null;
+            if (code === 0 && fs.existsSync(clientIndexHtml)) {
+                console.log('✅ [Startup] Frontend client/dist build complete.');
+                resolve(true);
+            } else {
+                console.warn(`⚠️ [Startup] Frontend build exited with code ${code}`);
+                resolve(false);
+            }
+        });
+        child.on('error', (err) => {
+            clientBuildPromise = null;
+            console.warn(`⚠️ [Startup] Frontend build error: ${err.message}`);
+            resolve(false);
+        });
+    });
+    return clientBuildPromise;
+}
+
+app.use(express.static(clientDistPath));
+app.use(async (req, res, next) => {
+    if (req.method === 'GET' && !req.path.startsWith('/api') && !req.path.startsWith('/health') && !req.path.startsWith('/socket.io')) {
+        if (!fs.existsSync(clientIndexHtml)) {
+            await ensureClientBuild();
+        }
+        return res.sendFile(clientIndexHtml, (err) => {
+            if (err && !res.headersSent) {
+                res.status(200).send('Interview Copilot AI Server is running.');
+            }
+        });
+    }
+    next();
 });
 
 // =============================================================================
@@ -935,10 +1554,14 @@ app.use((err, req, res, next) => {
 // SERVER STARTUP
 // =============================================================================
 
-httpServer.listen(PORT, () => {
-    console.log(`\n🚀 Server listening on http://localhost:${PORT}`);
+httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n🚀 Server listening on http://0.0.0.0:${PORT}`);
     console.log(`   Health: http://localhost:${PORT}/health`);
     console.log(`   CORS: ${ALL_ORIGINS.join(', ')}\n`);
+
+    if (!fs.existsSync(clientIndexHtml)) {
+        ensureClientBuild();
+    }
 
     if (UNIQUE_KEYS.length > 0) {
         aiEngine.verifyGeminiLive()

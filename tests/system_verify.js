@@ -21,6 +21,7 @@ const results = {
     socketConnection: 'PENDING',
     providerStatus: 'PENDING',
     resumeUpload: 'PENDING',
+    ragIngestionAndGroundedQuery: 'PENDING',
     speechAnalytics: 'PENDING',
     liveAIGeneration: 'PENDING',
     offlineFallbackSafetyNet: 'PENDING',
@@ -163,12 +164,69 @@ async function runTests() {
         results.resumeUpload = 'FAIL';
     }
 
-    // 3. Socket.IO Tests
-    console.log("\n🔌 Connecting Socket.IO client...");
+    // 2b. RAG Document Ingestion & Grounded Retrieval-Augmented Generation Test
+    try {
+        console.log("\n📚 Testing RAG pipeline (/api/rag/documents & /api/rag/query)...");
+        const ragSessionId = `sys_verify_rag_${Date.now()}`;
+        const ingestRes = await fetch(`${SERVER_URL}/api/rag/documents`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-session-id': ragSessionId
+            },
+            body: JSON.stringify({
+                filename: 'project_chronos_spec.md',
+                docType: 'technical_doc',
+                text: '# System Architecture\n\nProject Chronos is a distributed payment settlement engine built by Alex Rivera in Golang and Kubernetes. It uses Raft consensus and pgvector, reducing p99 settlement latency from 410ms to 38ms across 12 global regions.'
+            })
+        });
+        const ingestData = await ingestRes.json();
+        if (ingestData.success && ingestData.document?.chunkCount >= 1) {
+            const queryRes = await fetch(`${SERVER_URL}/api/rag/query`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-session-id': ragSessionId
+                },
+                body: JSON.stringify({
+                    question: 'What latency reduction did Project Chronos achieve and what technologies were used?'
+                })
+            });
+            const queryData = await queryRes.json();
+            if (
+                queryData.success &&
+                queryData.grounded === true &&
+                Array.isArray(queryData.sources) &&
+                queryData.sources.length >= 1 &&
+                queryData.sources[0].filename === 'project_chronos_spec.md' &&
+                (queryData.answer.includes('38ms') || queryData.answer.includes('410ms') || queryData.answer.includes('Chronos'))
+            ) {
+                results.ragIngestionAndGroundedQuery = `PASS (Grounded in ${queryData.sources.length} chunk(s), model: ${ingestData.document.embeddingModel})`;
+                console.log(`   ✅ RAG grounded answer & citation verified (${ingestData.document.embeddingModel})`);
+            } else {
+                results.ragIngestionAndGroundedQuery = 'FAIL';
+                console.error("   ❌ RAG query response did not meet grounding criteria:", JSON.stringify(queryData));
+            }
+        } else if (ingestData.code === 'EMBEDDING_UNAVAILABLE') {
+            results.ragIngestionAndGroundedQuery = 'BLOCKED (No live embedding credentials configured)';
+        } else {
+            results.ragIngestionAndGroundedQuery = 'FAIL';
+            console.error("   ❌ RAG ingestion failed:", JSON.stringify(ingestData));
+        }
+    } catch (err) {
+        console.error("   ❌ RAG verification error:", err.message);
+        results.ragIngestionAndGroundedQuery = 'FAIL';
+    }
+
+    // 3. Socket.IO Live Copilot Tests (including streaming answerChunk & rag:contextUsed)
+    console.log("\n🔌 Connecting Socket.IO Live Copilot client...");
     const socket = io(SERVER_URL, {
         transports: ['websocket', 'polling'],
         timeout: 10000
     });
+
+    let chunkReceived = false;
+    let ragContextEventReceived = false;
 
     socket.on('connect', () => {
         console.log(`   ✅ Socket connected (ID: ${socket.id})`);
@@ -186,8 +244,8 @@ async function runTests() {
         console.log("   🤖 Provider status received:", JSON.stringify(status));
         results.providerStatus = 'PASS';
 
-        console.log("   🗣️ Testing AI speech question handler...");
-        socket.emit('question', { transcript: "What is the Virtual DOM in React?" });
+        console.log("   🗣️ Testing Live Copilot question handler (streaming + RAG context)...");
+        socket.emit('question', { transcript: "What is the Virtual DOM in React and how does it relate to my JavaScript and React skills?" });
     });
 
     socket.on('speechAnalysisResult', (data) => {
@@ -197,11 +255,24 @@ async function runTests() {
         }
     });
 
+    socket.on('answerChunk', (data) => {
+        if (data && typeof data.chunk === 'string') {
+            chunkReceived = true;
+        }
+    });
+
+    socket.on('rag:contextUsed', (ctx) => {
+        if (ctx && typeof ctx.status === 'string') {
+            ragContextEventReceived = true;
+            console.log(`   📚 Live Copilot rag:contextUsed received (status: ${ctx.status}, grounded: ${ctx.grounded})`);
+        }
+    });
+
     let mockTriggered = false;
     let atsTriggered = false;
 
     socket.on('answer', (text) => {
-        console.log(`   📥 Received Answer (${text.length} chars): ${text.substring(0, 75).replace(/\n/g, ' ')}...`);
+        console.log(`   📥 Received Answer (${text.length} chars, streamedChunks=${chunkReceived}, ragEvent=${ragContextEventReceived}): ${text.substring(0, 75).replace(/\n/g, ' ')}...`);
 
         const isOffline = text.includes("📴 **Offline Mode**");
 
@@ -210,9 +281,9 @@ async function runTests() {
             results.offlineFallbackSafetyNet = 'PASS';
             console.warn("   ⚠️ Live AI generation did not produce output; Offline Fallback safety net engaged.");
         } else {
-            results.liveAIGeneration = 'PASS (Live AI generation verified)';
+            results.liveAIGeneration = `PASS (Live AI + streaming=${chunkReceived} + ragContext=${ragContextEventReceived})`;
             results.offlineFallbackSafetyNet = 'PASS (Not needed; live succeeded)';
-            console.log("   ✅ Real AI generation verified!");
+            console.log("   ✅ Real Live Copilot AI generation & streaming verified!");
         }
 
         if (!mockTriggered) {

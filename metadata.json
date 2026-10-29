@@ -1,0 +1,11 @@
+{
+  "name": "Interview Copilot AI",
+  "description": "Real-time AI interview copilot, mock interview studio, ATS resume analyzer, and coding practice environment.",
+  "requestFramePermissions": [
+    "microphone",
+    "display-capture"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 
-const StealthOverlay = ({ suggestions, onClose, pipWindow, lastTranscript, onClear }) => {
+const StealthOverlay = ({ suggestions, onClose, pipWindow, lastTranscript, ragContext, onClear }) => {
     const [opacity, setOpacity] = useState(0.92);
     const [pos, setPos] = useState({ x: 0, y: 0 });
     const [dragging, setDragging] = useState(false);
@@ -39,6 +39,8 @@ const StealthOverlay = ({ suggestions, onClose, pipWindow, lastTranscript, onCle
         };
     }, [dragging]);
 
+    const isGrounded = Boolean(ragContext?.grounded && Array.isArray(ragContext?.sources) && ragContext.sources.length > 0);
+
     const content = (
         <div
             style={{ opacity: pipWindow ? 1 : opacity }}
@@ -58,6 +60,11 @@ const StealthOverlay = ({ suggestions, onClose, pipWindow, lastTranscript, onCle
                     <span className="text-[11px] font-medium tracking-wide" style={{ color: '#EDEDED' }}>
                         {pipWindow ? 'Hidden • Not on screen share' : 'Stealth • Visible on share'}
                     </span>
+                    {isGrounded && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                            RAG ({ragContext.sources.length})
+                        </span>
+                    )}
                 </div>
                 <div className="flex items-center gap-1.5">
                     {!pipWindow && (
