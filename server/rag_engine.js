@@ -748,7 +748,21 @@ export class RAGEngine {
             throw err;
         }
 
-        const queryEmbedResult = await this.aiEngine.embedTexts([cleanQuery], { requestId });
+        if (!this.queryEmbeddingCache) {
+            this.queryEmbeddingCache = new Map();
+        }
+        const cacheKey = cleanQuery.toLowerCase();
+        let queryEmbedResult = this.queryEmbeddingCache.get(cacheKey);
+        if (!queryEmbedResult) {
+            queryEmbedResult = await this.aiEngine.embedTexts([cleanQuery], { requestId });
+            if (isValidEmbeddingVector(queryEmbedResult?.embeddings?.[0])) {
+                if (this.queryEmbeddingCache.size >= 100) {
+                    const firstKey = this.queryEmbeddingCache.keys().next().value;
+                    this.queryEmbeddingCache.delete(firstKey);
+                }
+                this.queryEmbeddingCache.set(cacheKey, queryEmbedResult);
+            }
+        }
         const queryVector = queryEmbedResult?.embeddings?.[0];
         if (!isValidEmbeddingVector(queryVector)) {
             const err = new Error('QUERY_EMBEDDING_FAILED: Invalid query embedding vector.');
@@ -756,6 +770,7 @@ export class RAGEngine {
             throw err;
         }
 
+        const allCandidateScores = [];
         const scored = [];
         for (const chunk of ownerChunks) {
             // Enforce strict tenant isolation
@@ -766,18 +781,32 @@ export class RAGEngine {
             if (!chunk.embedding || chunk.embedding.length !== queryVector.length) continue;
 
             const score = cosineSimilarity(queryVector, chunk.embedding);
+            const item = {
+                chunkId: chunk.chunkId,
+                docId: chunk.docId,
+                filename: chunk.filename,
+                docType: chunk.docType,
+                pageNumber: chunk.pageNumber,
+                sectionTitle: chunk.sectionTitle,
+                chunkIndex: chunk.chunkIndex,
+                score: Number(score.toFixed(4)),
+                text: chunk.text
+            };
+            allCandidateScores.push(item);
             if (score >= minScore) {
-                scored.push({
-                    chunkId: chunk.chunkId,
-                    docId: chunk.docId,
-                    filename: chunk.filename,
-                    docType: chunk.docType,
-                    pageNumber: chunk.pageNumber,
-                    sectionTitle: chunk.sectionTitle,
-                    chunkIndex: chunk.chunkIndex,
-                    score: Number(score.toFixed(4)),
-                    text: chunk.text
-                });
+                scored.push(item);
+            }
+        }
+
+        // If the user asks a broad candidate self-introduction question (e.g., "tell me about yourself",
+        // "walk me through your resume") and no explicit minScore override was set, include top resume/doc chunks.
+        const isBroadCandidateQuery = /\b(yourself|your background|your experience|your resume|your projects|your skills|introduce|walk me through|who are you|hire you|about you)\b/i.test(cleanQuery);
+        if (scored.length === 0 && opts.minScore === undefined && isBroadCandidateQuery && allCandidateScores.length > 0) {
+            allCandidateScores.sort((a, b) => b.score - a.score);
+            for (const candidate of allCandidateScores.slice(0, topK)) {
+                if (candidate.score >= 0.12) {
+                    scored.push(candidate);
+                }
             }
         }
 

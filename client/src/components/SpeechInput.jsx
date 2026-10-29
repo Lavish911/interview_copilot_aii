@@ -94,11 +94,16 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
         }
 
         const now = Date.now();
-        if (text === lastProcessedRef.current.text && now - lastProcessedRef.current.at < 3000) {
+        const normText = text.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+        const prevNorm = (lastProcessedRef.current.normText || '');
+        if (
+            now - lastProcessedRef.current.at < 3500 &&
+            (normText === prevNorm || (prevNorm.length >= 6 && normText.startsWith(prevNorm)))
+        ) {
             return;
         }
 
-        lastProcessedRef.current = { text, at: now };
+        lastProcessedRef.current = { text, normText, at: now };
         setInterimText("");
         onTranscript(text);
 
@@ -156,7 +161,7 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
                             try { recognitionRef.current.abort(); } catch { /* ignore */ }
                         }
                     }
-                }, 1500);
+                }, 2000);
             }
         };
 

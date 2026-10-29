@@ -8,7 +8,9 @@ import { buildGroundedRAGPrompt } from './rag_engine.js';
 
 export const CANONICAL_GEMINI_MODELS = Object.freeze([
     "gemini-2.5-flash",
-    "gemini-2.5-flash-lite"
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite"
 ]);
 
 export const CANONICAL_GEMINI_EMBEDDING_MODELS = Object.freeze(
@@ -275,8 +277,10 @@ export class AIEngine {
         this.openAIEmbeddingModel = config.openAIEmbeddingModel || CANONICAL_OPENAI_EMBEDDING_MODEL;
         this.embeddingProvider = (config.embeddingProvider || process.env.RAG_EMBEDDING_PROVIDER || 'auto').toLowerCase();
 
-        this.deadKeyTTLMs = config.deadKeyTTLMs || (5 * 60 * 1000); // 5 minutes
+        this.deadKeyTTLMs = config.deadKeyTTLMs || (5 * 60 * 1000); // 5 minutes for permanent auth errors
+        this.transientKeyTTLMs = config.deadKeyTTLMs || config.transientKeyTTLMs || (15 * 1000); // 15s for transient 429/503/timeout
         this.deadKeyTimestamps = new Map();
+        this.deadKeyReasons = new Map();
         this.globalKeyIndex = 0;
         this.requestTimeoutMs = config.requestTimeoutMs || 15000;
 
@@ -307,16 +311,45 @@ export class AIEngine {
     isKeyDead(key) {
         const timestamp = this.deadKeyTimestamps.get(key);
         if (!timestamp) return false;
-        if (Date.now() - timestamp > this.deadKeyTTLMs) {
+        const reason = this.deadKeyReasons.get(key) || 'permanent';
+        const ttl = reason === 'transient' ? this.transientKeyTTLMs : this.deadKeyTTLMs;
+        if (Date.now() - timestamp > ttl) {
             this.deadKeyTimestamps.delete(key);
+            this.deadKeyReasons.delete(key);
             console.log(`🔄 Key TTL expired — returned to active pool.`);
             return false;
         }
         return true;
     }
 
-    markKeyDead(key) {
+    markKeyDead(key, reason = 'permanent') {
         this.deadKeyTimestamps.set(key, Date.now());
+        this.deadKeyReasons.set(key, reason);
+    }
+
+    /**
+     * If all format-valid keys are currently in cooldown, release the oldest transiently
+     * failed key (never permanently invalid AUTH_ERROR keys) so live requests can retry.
+     */
+    _releaseOldestTransientKeyIfAllCoolingDown(validKeys) {
+        if (validKeys.some(k => !this.isKeyDead(k))) return;
+        let oldestKey = null;
+        let oldestTs = Infinity;
+        for (const k of validKeys) {
+            if (this.deadKeyReasons.get(k) === 'transient') {
+                const ts = this.deadKeyTimestamps.get(k) || 0;
+                if (ts < oldestTs) {
+                    oldestTs = ts;
+                    oldestKey = k;
+                }
+            }
+        }
+        if (oldestKey) {
+            this.deadKeyTimestamps.delete(oldestKey);
+            this.deadKeyReasons.delete(oldestKey);
+            const idx = this.uniqueGeminiKeys.indexOf(oldestKey);
+            if (idx !== -1) this.globalKeyIndex = idx;
+        }
     }
 
     /**
@@ -440,6 +473,9 @@ export class AIEngine {
             throw err;
         }
 
+        // Ensure transient rate-limit cooldowns never lock out all valid keys without attempting a live call
+        this._releaseOldestTransientKeyIfAllCoolingDown(validKeys);
+
         let lastError = null;
         let lastClassification = null;
 
@@ -450,7 +486,7 @@ export class AIEngine {
             // Validate format for this specific key
             const formatCheck = validateGeminiCredentialFormat(currentKey);
             if (!formatCheck.valid) {
-                this.markKeyDead(currentKey);
+                this.markKeyDead(currentKey, 'permanent');
                 continue;
             }
 
@@ -657,7 +693,7 @@ export class AIEngine {
                     }
 
                     if (lastClassification.isPermanent) {
-                        this.markKeyDead(currentKey);
+                        this.markKeyDead(currentKey, 'permanent');
                         failedAllModelsForKey = false;
                         break;
                     }
@@ -677,8 +713,8 @@ export class AIEngine {
             }
 
             if (failedAllModelsForKey) {
-                this.markKeyDead(currentKey);
-                console.log(`[${requestId}] ⚠️ Key ${currentKeyIndex + 1} exhausted across candidate models. Cooldown: ${this.deadKeyTTLMs / 1000}s`);
+                this.markKeyDead(currentKey, 'transient');
+                console.log(`[${requestId}] ⚠️ Key ${currentKeyIndex + 1} exhausted across candidate models. Cooldown: ${this.transientKeyTTLMs / 1000}s`);
             }
         }
 
@@ -752,13 +788,21 @@ export class AIEngine {
                 throw new Error("GEMINI_CREDENTIAL_FORMAT_INVALID");
             }
 
+            this._releaseOldestTransientKeyIfAllCoolingDown(validKeys);
+
             let lastError = null;
             for (let loopCount = 0; loopCount < this.uniqueGeminiKeys.length; loopCount++) {
                 const currentKeyIndex = (this.globalKeyIndex + loopCount) % this.uniqueGeminiKeys.length;
                 const currentKey = this.uniqueGeminiKeys[currentKeyIndex];
-                if (!validateGeminiCredentialFormat(currentKey).valid || this.isKeyDead(currentKey)) {
+                if (!validateGeminiCredentialFormat(currentKey).valid) {
+                    this.markKeyDead(currentKey, 'permanent');
                     continue;
                 }
+                if (this.isKeyDead(currentKey)) {
+                    continue;
+                }
+
+                let failedAllEmbedModelsForKey = true;
 
                 for (const embedModel of this.geminiEmbeddingModels) {
                     const startTime = Date.now();
@@ -834,7 +878,8 @@ export class AIEngine {
                             status: 'SUCCESS', durationMs: Date.now() - startTime
                         });
 
-                        this.geminiLiveVerified = true;
+                        failedAllEmbedModelsForKey = false;
+                        this.globalKeyIndex = (currentKeyIndex + 1) % this.uniqueGeminiKeys.length;
                         return {
                             embeddings: allVectors,
                             provider: 'gemini',
@@ -851,10 +896,15 @@ export class AIEngine {
                             errorMessage: err.message
                         });
                         if (classification.isPermanent) {
-                            this.markKeyDead(currentKey);
+                            this.markKeyDead(currentKey, 'permanent');
+                            failedAllEmbedModelsForKey = false;
                             break;
                         }
                     }
+                }
+
+                if (failedAllEmbedModelsForKey) {
+                    this.markKeyDead(currentKey, 'transient');
                 }
             }
 
