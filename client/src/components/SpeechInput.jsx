@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 
 const PHRASE_CORRECTIONS = [
-    // Frontend & JS/TS
     [/\b(we act|re act|reacts|react j s|react js)\b/gi, "React"],
     [/\b(virtual dorm|virtual don|virtual d o m)\b/gi, "Virtual DOM"],
     [/\b(d o m)\b/gi, "DOM"],
@@ -17,7 +16,6 @@ const PHRASE_CORRECTIONS = [
     [/\b(ht ml|h t m l)\b/gi, "HTML"],
     [/\b(tail wind|tailwind c s s)\b/gi, "Tailwind CSS"],
     [/\b(re ducks|read ux)\b/gi, "Redux"],
-    // Backend & Runtime
     [/\b(notes js|note js|no js|node j s|know js)\b/gi, "Node.js"],
     [/\b(even loop|event luke)\b/gi, "Event Loop"],
     [/\b(express js|express j s)\b/gi, "Express.js"],
@@ -32,7 +30,6 @@ const PHRASE_CORRECTIONS = [
     [/\b(g r p c)\b/gi, "gRPC"],
     [/\b(a sink|a synchronous)\b/gi, "async"],
     [/\b(close sure|closures|closure)\b/gi, "closure"],
-    // Databases & Caching
     [/\b(no sequel|no s q l)\b/gi, "NoSQL"],
     [/\b(my sequel|my s q l|my sql)\b/gi, "MySQL"],
     [/\b(post grass|post gress|post gres|postgres q l)\b/gi, "PostgreSQL"],
@@ -42,7 +39,6 @@ const PHRASE_CORRECTIONS = [
     [/\b(cash invalidation)\b/gi, "cache invalidation"],
     [/\b(cashing)\b/gi, "caching"],
     [/\b(data sharting|sharting)\b/gi, "sharding"],
-    // DevOps, Cloud & Architecture
     [/\b(cooper net is|cooper netties|kuber netis|cuban it is|k 8 s)\b/gi, "Kubernetes"],
     [/\b(micro service|micro services)\b/gi, "microservices"],
     [/\b(sister design|system designed)\b/gi, "system design"],
@@ -63,7 +59,6 @@ const PHRASE_CORRECTIONS = [
     [/\b(u d p)\b/gi, "UDP"],
     [/\b(d n s)\b/gi, "DNS"],
     [/\b(c d n)\b/gi, "CDN"],
-    // CS & Algorithms
     [/\b(d s a|b s a)\b/gi, "DSA"],
     [/\b(big o|big oh)\b/gi, "Big O"],
     [/\b(lead code|leet code)\b/gi, "LeetCode"],
@@ -93,45 +88,25 @@ const KNOWN_SINGLE_WORD_TOPICS = new Set([
 
 function cleanSpeechTranscript(rawText = "") {
     if (!rawText || typeof rawText !== "string") return "";
-    let text = rawText.trim();
+    let text = rawText.trim().replace(/^(?:(?:um+|uh+|hmm+|er+|ah+|oh+|like|you know|i mean|so yeah|okay so|alright so|well|so|okay|alright)[,\s]+)+/i, "").trim();
     if (!text) return "";
-
-    // Strip leading conversational filler words from microphone speech
-    text = text.replace(/^(?:(?:um+|uh+|hmm+|er+|ah+|oh+|like|you know|i mean|so yeah|okay so|alright so|well|so|okay|alright)[,\s]+)+/i, "").trim();
 
     for (const [pattern, replacement] of PHRASE_CORRECTIONS) {
         text = text.replace(pattern, replacement);
     }
-
-    // Contextual fix for "cash" -> "cache" when near technical terms
     if (/\b(redis|database|memory|server|browser|cdn|api|query|data|hit|miss|layer|invalidat|ttl|store|system|design|scale|latency)\b/i.test(text)) {
         text = text.replace(/\bcash\b/gi, "cache");
     }
-
-    // Collapse repeated consecutive words often caused by STT stutter ("what is what is" -> "what is")
-    text = text.replace(/\b(\w+)(?:\s+\1\b)+/gi, "$1");
-    text = text.replace(/\s+/g, " ").trim();
-
-    if (text.length > 0) {
-        text = text.charAt(0).toUpperCase() + text.slice(1);
-    }
-    return text;
+    text = text.replace(/\b(\w+)(?:\s+\1\b)+/gi, "$1").replace(/\s+/g, " ").trim();
+    return text ? text.charAt(0).toUpperCase() + text.slice(1) : "";
 }
 
 function isMeaningfulInterviewQuery(cleanedText, fromMic = false) {
     if (!cleanedText) return false;
     const norm = cleanedText.toLowerCase().replace(/[^a-z0-9.#+\s/-]/g, "").replace(/\s+/g, " ").trim();
-    if (!norm) return false;
-
-    if (fromMic && NON_QUESTION_CHATTER.has(norm)) {
-        return false;
-    }
-
+    if (!norm || (fromMic && NON_QUESTION_CHATTER.has(norm))) return false;
     const words = norm.split(" ").filter(Boolean);
-    if (fromMic && words.length < 2 && !KNOWN_SINGLE_WORD_TOPICS.has(words[0])) {
-        return false;
-    }
-    return true;
+    return !(fromMic && words.length < 2 && !KNOWN_SINGLE_WORD_TOPICS.has(words[0]));
 }
 
 const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
@@ -195,9 +170,7 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
         setInterimText("");
     }, []);
 
-    useEffect(() => {
-        return () => stopSpeechEngine();
-    }, [stopSpeechEngine]);
+    useEffect(() => () => stopSpeechEngine(), [stopSpeechEngine]);
 
     const handleSend = useCallback((rawText, { fromMic = false } = {}) => {
         if (!rawText || (fromMic && isMutedRef.current)) return;
@@ -210,7 +183,7 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
 
         const now = Date.now();
         const normText = text.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
-        const prevNorm = (lastProcessedRef.current.normText || '');
+        const prevNorm = lastProcessedRef.current.normText || '';
         if (
             now - lastProcessedRef.current.at < 3500 &&
             (normText === prevNorm || (prevNorm.length >= 6 && normText.startsWith(prevNorm)))
@@ -224,10 +197,7 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
         setLastHeardText(text);
         onTranscript(text);
 
-        socket.emit('question', {
-            transcript: text,
-            ...additionalContextRef.current
-        });
+        socket.emit('question', { transcript: text, ...additionalContextRef.current });
         socket.emit('analyzeSpeech', text);
     }, [socket, onTranscript]);
 
@@ -241,7 +211,6 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
 
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         const recognition = new SpeechRecognition();
-
         recognition.continuous = true;
         recognition.interimResults = true;
         recognition.lang = 'en-US';
@@ -253,47 +222,30 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
 
             let finalChunk = '';
             let interimTranscript = '';
-
             for (let i = event.resultIndex; i < event.results.length; ++i) {
-                if (event.results[i].isFinal) {
-                    finalChunk += event.results[i][0].transcript + ' ';
-                } else {
-                    interimTranscript += event.results[i][0].transcript;
-                }
+                if (event.results[i].isFinal) finalChunk += event.results[i][0].transcript + ' ';
+                else interimTranscript += event.results[i][0].transcript;
             }
 
             if (finalChunk.trim()) {
                 finalBufferRef.current = `${finalBufferRef.current} ${finalChunk}`.replace(/\s+/g, ' ').trim();
             }
 
-            const combinedPreview = cleanSpeechTranscript(
-                `${finalBufferRef.current} ${interimTranscript}`.trim()
-            );
-            setInterimText(combinedPreview);
+            setInterimText(cleanSpeechTranscript(`${finalBufferRef.current} ${interimTranscript}`.trim()));
 
-            if (silenceTimerRef.current) {
-                clearTimeout(silenceTimerRef.current);
-                silenceTimerRef.current = null;
-            }
-
-            // Wait briefly (850ms after a final clause, or 1750ms after interim speech)
-            // so multi-clause questions aren't cut off mid-sentence.
+            if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
             const waitMs = finalBufferRef.current && !interimTranscript.trim() ? 850 : 1750;
             silenceTimerRef.current = setTimeout(() => {
                 if (isMutedRef.current) return;
                 const toSend = `${finalBufferRef.current} ${interimTranscript}`.replace(/\s+/g, ' ').trim();
                 finalBufferRef.current = "";
-                if (toSend) {
-                    handleSend(toSend, { fromMic: true });
-                }
+                if (toSend) handleSend(toSend, { fromMic: true });
             }, waitMs);
         };
 
         recognition.onend = () => {
             if (isListeningRef.current) {
-                setTimeout(() => {
-                    if (isListeningRef.current) startSpeechEngine();
-                }, 100);
+                setTimeout(() => { if (isListeningRef.current) startSpeechEngine(); }, 100);
             }
         };
 
@@ -308,16 +260,11 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
         };
 
         recognitionRef.current = recognition;
-        try {
-            recognition.start();
-        } catch (e) {
-            console.error("Start error:", e);
-        }
+        try { recognition.start(); } catch (e) { console.error("Start error:", e); }
     }, [stopSpeechEngine, handleSend]);
 
     const toggleListening = async () => {
         setErrorMessage("");
-
         if (window.location.hostname !== 'localhost' && window.location.protocol === 'http:') {
             setErrorMessage("⚠️ HTTPS Required for Mic on Network! Use localhost or HTTPS.");
             return;
@@ -327,40 +274,39 @@ const SpeechInput = ({ socket, onTranscript, additionalContext = {} }) => {
             setIsListening(false);
             isListeningRef.current = false;
             stopSpeechEngine();
-        } else {
-            if (navigator.mediaDevices?.getUserMedia) {
-                try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    stream.getTracks().forEach(t => t.stop());
-                } catch (err) {
-                    setErrorMessage(
-                        err.name === 'NotAllowedError'
-                            ? "⚠️ Mic blocked — click the lock icon → Allow microphone, then try again."
-                            : `⚠️ Mic error: ${err.message}`
-                    );
-                    return;
-                }
-            }
-            setIsListening(true);
-            isListeningRef.current = true;
-            startSpeechEngine();
+            return;
         }
+
+        if (navigator.mediaDevices?.getUserMedia) {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                stream.getTracks().forEach(t => t.stop());
+            } catch (err) {
+                setErrorMessage(
+                    err.name === 'NotAllowedError'
+                        ? "⚠️ Mic blocked — click the lock icon → Allow microphone, then try again."
+                        : `⚠️ Mic error: ${err.message}`
+                );
+                return;
+            }
+        }
+        setIsListening(true);
+        isListeningRef.current = true;
+        startSpeechEngine();
     };
 
-    // Clipboard Image Paste Support
     useEffect(() => {
         const handlePaste = (e) => {
             const items = e.clipboardData?.items;
             if (!items) return;
             for (let i = 0; i < items.length; i++) {
-                if (items[i].type.indexOf("image") !== -1) {
-                    const blob = items[i].getAsFile();
+                if (items[i].type.includes("image")) {
                     const reader = new FileReader();
                     reader.onload = (event) => {
                         onTranscript("📸 Analyzing screenshot...");
                         socket.emit('question', { transcript: "", image: event.target.result });
                     };
-                    reader.readAsDataURL(blob);
+                    reader.readAsDataURL(items[i].getAsFile());
                     e.preventDefault();
                     break;
                 }
